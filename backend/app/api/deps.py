@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from functools import lru_cache
 
 from fastapi import Depends
 from sqlalchemy.orm import Session
@@ -7,10 +8,16 @@ from app.orchestration import AnalysisPipelineService
 from app.orchestration import FetchPipelineService
 from app.infra.db import SessionLocal
 from app.infra.settings import Settings, get_settings
+from app.llm import LLMClient, build_llm_client
 
 
 def get_app_settings() -> Settings:
     return get_settings()
+
+
+@lru_cache
+def _get_cached_llm_client() -> LLMClient:
+    return build_llm_client(get_settings())
 
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -31,3 +38,7 @@ def get_analysis_pipeline_service(
     session: Session = Depends(get_db_session),
 ) -> AnalysisPipelineService:
     return AnalysisPipelineService(session)
+
+
+def get_llm_client() -> LLMClient:
+    return _get_cached_llm_client()

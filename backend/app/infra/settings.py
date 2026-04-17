@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     ncbi_tool: str = "medical-intelligence-system"
     ncbi_email: str | None = None
     ncbi_api_key: str | None = None
+    llm_provider: str = "openrouter"
+    llm_api_key: str | None = None
+    llm_default_model: str | None = None
+    llm_request_timeout_seconds: float = 60.0
+    llm_enable_response_healing: bool = True
+    llm_openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    llm_openrouter_site_url: str | None = None
+    llm_openrouter_app_title: str = "Medical Intelligence System"
 
     model_config = SettingsConfigDict(
         env_prefix="MIS_",
