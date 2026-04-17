@@ -144,6 +144,33 @@ h2 {
   opacity: 0.75;
 }
 
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.action-button {
+  width: fit-content;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #0d7a74 0%, #1d5f91 100%);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action-button:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+.action-button-secondary {
+  background: linear-gradient(135deg, #526878 0%, #2d4454 100%);
+}
+
 .result-stack {
   display: grid;
   gap: 18px;
@@ -165,6 +192,55 @@ h2 {
 .result-card h3 {
   margin: 0 0 14px;
   font-size: 1rem;
+}
+
+.analysis-stack {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.analysis-card {
+  border: 1px solid rgba(19, 48, 64, 0.06);
+}
+
+.compact-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compact-list li {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.compact-list li span {
+  color: #355869;
+  line-height: 1.55;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #9a5b00;
+  font-size: 0.9rem;
+  line-height: 1.4;
 }
 
 .result-list,
@@ -264,5 +340,9 @@ ul {
   .hero-card,
   .panel {
     padding: 20px;
+  }
+
+  .action-row {
+    flex-direction: column;
   }
 }

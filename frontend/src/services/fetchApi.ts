@@ -1,4 +1,5 @@
 import type {
+  AnalysisBundleResponse,
   FetchCreateRequest,
   FetchRunResponse,
   RawRecordListResponse,
@@ -34,5 +35,29 @@ export async function listRawRecords(
     throw new Error(`原始记录查询失败：${response.status} ${errorText}`);
   }
   return response.json() as Promise<RawRecordListResponse>;
+}
+
+export async function buildAnalysisBundle(
+  fetchRunId: string,
+): Promise<AnalysisBundleResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/fetches/${fetchRunId}/analysis`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`阶段 2 分析构建失败：${response.status} ${errorText}`);
+  }
+  return response.json() as Promise<AnalysisBundleResponse>;
+}
+
+export async function getAnalysisBundle(
+  fetchRunId: string,
+): Promise<AnalysisBundleResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/fetches/${fetchRunId}/analysis`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`分析快照查询失败：${response.status} ${errorText}`);
+  }
+  return response.json() as Promise<AnalysisBundleResponse>;
 }
 

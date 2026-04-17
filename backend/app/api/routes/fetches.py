@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import get_fetch_pipeline_service
+from app.api.deps import get_analysis_pipeline_service, get_fetch_pipeline_service
+from app.api.schemas.analysis import AnalysisBundleResponse
 from app.api.schemas.fetches import (
     FetchCreateRequest,
     FetchRunResponse,
@@ -10,7 +11,7 @@ from app.api.schemas.fetches import (
     RawRecordResponse,
 )
 from app.domain import SourceName
-from app.orchestration import FetchPipelineService
+from app.orchestration import AnalysisPipelineService, FetchPipelineService
 
 router = APIRouter(prefix="/api/fetches", tags=["fetches"])
 
@@ -89,3 +90,21 @@ def list_raw_records(
             for record in records
         ],
     )
+
+
+@router.post("/{fetch_run_id}/analysis", response_model=AnalysisBundleResponse)
+def build_analysis_bundle(
+    fetch_run_id: str,
+    service: AnalysisPipelineService = Depends(get_analysis_pipeline_service),
+) -> AnalysisBundleResponse:
+    bundle = service.build(fetch_run_id)
+    return AnalysisBundleResponse.from_domain(fetch_run_id=fetch_run_id, bundle=bundle)
+
+
+@router.get("/{fetch_run_id}/analysis", response_model=AnalysisBundleResponse)
+def get_analysis_bundle(
+    fetch_run_id: str,
+    service: AnalysisPipelineService = Depends(get_analysis_pipeline_service),
+) -> AnalysisBundleResponse:
+    bundle = service.get_bundle(fetch_run_id)
+    return AnalysisBundleResponse.from_domain(fetch_run_id=fetch_run_id, bundle=bundle)

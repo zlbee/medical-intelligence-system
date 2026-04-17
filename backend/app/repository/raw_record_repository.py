@@ -90,6 +90,30 @@ class RawRecordRepository:
             for link_model, raw_record_model in rows
         ]
 
+    def list_all_by_fetch_run(
+        self,
+        fetch_run_id: str,
+        *,
+        source_name: SourceName | None = None,
+    ) -> list[RawRecord]:
+        statement = (
+            select(FetchRunRawRecordModel, RawRecordModel)
+            .join(
+                RawRecordModel,
+                RawRecordModel.id == FetchRunRawRecordModel.raw_record_id,
+            )
+            .where(FetchRunRawRecordModel.fetch_run_id == fetch_run_id)
+            .order_by(FetchRunRawRecordModel.retrieved_at.desc())
+        )
+        if source_name is not None:
+            statement = statement.where(RawRecordModel.source_name == source_name.value)
+
+        rows = self.session.execute(statement).all()
+        return [
+            self._to_domain(link_model, raw_record_model)
+            for link_model, raw_record_model in rows
+        ]
+
     def _to_domain(
         self,
         link_model: FetchRunRawRecordModel,
