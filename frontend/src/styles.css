@@ -1,0 +1,153 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", "PingFang SC", sans-serif;
+  background:
+    radial-gradient(circle at top left, #dceeff 0, transparent 35%),
+    linear-gradient(135deg, #f7fbff 0%, #eef6f1 100%);
+  color: #133040;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.page-shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+}
+
+.hero-card,
+.panel {
+  border: 1px solid rgba(19, 48, 64, 0.08);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 18px 40px rgba(19, 48, 64, 0.08);
+}
+
+.hero-card {
+  padding: 32px;
+}
+
+.eyebrow {
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #23707a;
+}
+
+h1,
+h2 {
+  margin: 0;
+}
+
+h1 {
+  margin-top: 12px;
+  font-size: clamp(2rem, 4vw, 3.5rem);
+  line-height: 1.05;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin-bottom: 16px;
+}
+
+.lead {
+  margin: 18px 0 0;
+  max-width: 760px;
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: #355869;
+}
+
+.grid {
+  display: grid;
+  gap: 24px;
+  margin-top: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.panel {
+  padding: 24px;
+}
+
+ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #355869;
+  line-height: 1.8;
+}
+
+.status-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.status {
+  padding: 14px 16px;
+  border-radius: 16px;
+  font-weight: 600;
+}
+
+.status-ok {
+  background: #e5f8ef;
+  color: #0a6a47;
+}
+
+.status-error {
+  background: #fde8e8;
+  color: #b42318;
+}
+
+.meta-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.meta-list div {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #f6fafc;
+}
+
+.meta-list dt {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #5e7a88;
+}
+
+.meta-list dd {
+  margin: 6px 0 0;
+  color: #173746;
+  word-break: break-word;
+}
+
+@media (max-width: 640px) {
+  .page-shell {
+    padding: 24px 16px 40px;
+  }
+
+  .hero-card,
+  .panel {
+    border-radius: 20px;
+  }
+
+  .hero-card,
+  .panel {
+    padding: 20px;
+  }
+}
+
