@@ -83,7 +83,6 @@ def list_raw_records(
                 source_url=record.source_url,
                 target=record.target,
                 indication=record.indication,
-                payload=record.payload,
                 query_snapshot=record.query_snapshot,
                 retrieved_at=record.retrieved_at,
             )

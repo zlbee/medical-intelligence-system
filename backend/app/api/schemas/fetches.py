@@ -44,7 +44,8 @@ class RawRecordResponse(BaseModel):
     source_url: str | None = None
     target: str
     indication: str | None = None
-    payload: dict[str, Any]
+    # Raw payloads stay persisted in the backend, but list responses intentionally
+    # omit them so the frontend does not receive oversized JSON blobs.
     query_snapshot: dict[str, Any]
     retrieved_at: datetime
 

@@ -36,7 +36,6 @@ export interface RawRecord {
   source_url: string | null;
   target: string;
   indication: string | null;
-  payload: Record<string, unknown>;
   query_snapshot: Record<string, unknown>;
   retrieved_at: string;
 }
