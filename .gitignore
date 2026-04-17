@@ -3,19 +3,23 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+backend/.deps/
+backend/.tmp/
 
 # Node
 node_modules/
 dist/
+frontend/.npm-cache/
 
 # Environment
 .env
 
 # Local data
+data/
 backend/data/
 backend/reports/
+backend/pytest-cache-files-*/
 
 # OS / Editor
 .DS_Store
 Thumbs.db
-

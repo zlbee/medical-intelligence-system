@@ -1,11 +1,13 @@
 # 医疗情报系统
 
-医疗情报系统 V1 原型仓库。当前已完成阶段 0 的项目底座与开发环境初始化，包含：
+医疗情报系统 V1 原型仓库。当前已完成阶段 0 的项目底座初始化，并已进入阶段 1 的双源采集实现，包含：
 
 - `FastAPI` 后端骨架
 - `React + Vite` 前端骨架
 - `Docker Compose` 本地联调环境
 - SQLite、日志、配置、健康检查基础设施
+- `ClinicalTrials.gov + PubMed` 双源采集链路
+- 原始数据入库与 JSON 查询配置接口
 
 ## 目录
 
@@ -31,6 +33,7 @@ docker compose up --build
 - 前端：`http://localhost:5173`
 - 后端：`http://localhost:8000`
 - 健康检查：`http://localhost:8000/health`
+- 多源采集接口：`http://localhost:8000/api/fetches`
 
 ### 3. 本地开发
 
@@ -52,6 +55,31 @@ npm install
 npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
+## 阶段 1 API
+
+### 创建一次多源采集任务
+
+```text
+POST /api/fetches
+```
+
+请求体可使用 JSON 配置两个来源的筛选条件，示例文件见：
+
+- [示例采集请求-HER2.json](D:\Project\REFERENCE\medical-intelligence-system\docs\示例采集请求-HER2.json)
+
+### 查询采集任务详情
+
+```text
+GET /api/fetches/{fetch_run_id}
+```
+
+### 查询采集到的原始记录
+
+```text
+GET /api/fetches/{fetch_run_id}/records
+GET /api/fetches/{fetch_run_id}/records?source_name=pubmed
+```
+
 ## 当前阶段状态
 
-当前处于 [实施阶段拆分与里程碑](D:\Project\REFERENCE\medical-intelligence-system\docs\实施阶段拆分与里程碑.md) 的“阶段 0：项目底座与开发环境初始化”。
+当前正在实施 [实施阶段拆分与里程碑](D:\Project\REFERENCE\medical-intelligence-system\docs\实施阶段拆分与里程碑.md) 的“阶段 1：多源采集与原始数据入库”。

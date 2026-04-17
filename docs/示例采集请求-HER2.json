@@ -1,0 +1,32 @@
+{
+  "target": "HER2",
+  "indication": "breast cancer",
+  "aliases": ["ERBB2"],
+  "source_configs": {
+    "clinicaltrials": {
+      "enabled": true,
+      "page_size": 5,
+      "max_pages": 1,
+      "count_total": true,
+      "query": {
+        "intr": "HER2"
+      },
+      "filters": {
+        "overallStatus": ["RECRUITING", "ACTIVE_NOT_RECRUITING"]
+      }
+    },
+    "pubmed": {
+      "enabled": true,
+      "retmax": 5,
+      "batch_size": 5,
+      "sort": "pub_date",
+      "filters": {
+        "publication_types": ["Clinical Trial", "Review"],
+        "title_abstract_terms": ["HER2 targeted therapy"],
+        "date_from": "2023/01/01",
+        "date_to": "2025/12/31",
+        "has_abstract": true
+      }
+    }
+  }
+}

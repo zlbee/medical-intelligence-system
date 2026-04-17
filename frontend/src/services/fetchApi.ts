@@ -1,0 +1,38 @@
+import type {
+  FetchCreateRequest,
+  FetchRunResponse,
+  RawRecordListResponse,
+} from "../types/fetch";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+
+export async function createFetchRun(
+  payload: FetchCreateRequest,
+): Promise<FetchRunResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/fetches`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`采集请求失败：${response.status} ${errorText}`);
+  }
+
+  return response.json() as Promise<FetchRunResponse>;
+}
+
+export async function listRawRecords(
+  fetchRunId: string,
+): Promise<RawRecordListResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/fetches/${fetchRunId}/records`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`原始记录查询失败：${response.status} ${errorText}`);
+  }
+  return response.json() as Promise<RawRecordListResponse>;
+}
+

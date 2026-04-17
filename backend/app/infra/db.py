@@ -40,6 +40,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def initialize_database() -> None:
+    from app.repository import models  # noqa: F401
+
     url = make_url(settings.database_url)
     _ensure_sqlite_directory(url)
     Base.metadata.create_all(bind=engine)
@@ -52,4 +54,3 @@ def check_database_connection() -> bool:
         return True
     except Exception:
         return False
-
