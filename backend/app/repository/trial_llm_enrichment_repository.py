@@ -43,3 +43,26 @@ class TrialLLMEnrichmentRepository:
         )
         models = self.session.scalars(statement).all()
         return [TrialLLMEnrichment.model_validate(model.payload) for model in models]
+
+    def find_latest_by_trial_keys(
+        self,
+        trial_keys: list[str],
+    ) -> dict[str, TrialLLMEnrichment]:
+        if not trial_keys:
+            return {}
+        statement = (
+            select(TrialLLMEnrichmentModel)
+            .where(TrialLLMEnrichmentModel.trial_key.in_(trial_keys))
+            .order_by(
+                TrialLLMEnrichmentModel.trial_key.asc(),
+                TrialLLMEnrichmentModel.created_at.desc(),
+                TrialLLMEnrichmentModel.id.desc(),
+            )
+        )
+        models = self.session.scalars(statement).all()
+        latest_by_key: dict[str, TrialLLMEnrichment] = {}
+        for model in models:
+            if model.trial_key in latest_by_key:
+                continue
+            latest_by_key[model.trial_key] = TrialLLMEnrichment.model_validate(model.payload)
+        return latest_by_key

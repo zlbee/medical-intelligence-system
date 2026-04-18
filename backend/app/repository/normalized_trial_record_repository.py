@@ -46,3 +46,26 @@ class NormalizedTrialRecordRepository:
             NormalizedTrialRecord.model_validate(model.payload)
             for model in models
         ]
+
+    def find_latest_by_trial_keys(
+        self,
+        trial_keys: list[str],
+    ) -> dict[str, NormalizedTrialRecord]:
+        if not trial_keys:
+            return {}
+        statement = (
+            select(NormalizedTrialRecordModel)
+            .where(NormalizedTrialRecordModel.trial_key.in_(trial_keys))
+            .order_by(
+                NormalizedTrialRecordModel.trial_key.asc(),
+                NormalizedTrialRecordModel.created_at.desc(),
+                NormalizedTrialRecordModel.id.desc(),
+            )
+        )
+        models = self.session.scalars(statement).all()
+        latest_by_key: dict[str, NormalizedTrialRecord] = {}
+        for model in models:
+            if model.trial_key in latest_by_key:
+                continue
+            latest_by_key[model.trial_key] = NormalizedTrialRecord.model_validate(model.payload)
+        return latest_by_key

@@ -13,6 +13,7 @@ from app.domain import (
     LiteratureLLMEnrichment,
     NormalizedLiteratureRecord,
     NormalizedTrialRecord,
+    RawRecord,
     RuleScoreBreakdown,
     SourceName,
     TargetQuery,
@@ -95,8 +96,8 @@ class AnalysisPipelineService:
             )
 
         query = self._to_target_query(fetch_run)
-        trials = self.trial_normalizer.normalize_many(raw_records)
-        literature = self.literature_normalizer.normalize_many(raw_records)
+        trials = self._build_normalized_trials(raw_records)
+        literature = self._build_normalized_literature(raw_records)
 
         self.normalized_trial_record_repository.replace_for_fetch_run(fetch_run_id, trials)
         self.normalized_literature_record_repository.replace_for_fetch_run(
@@ -173,17 +174,47 @@ class AnalysisPipelineService:
         list[WarningItem],
     ]:
         warnings: list[WarningItem] = []
+        trial_enrichment_map = self.trial_llm_enrichment_repository.find_latest_by_trial_keys(
+            [record.trial_key for record in trials]
+        )
+        literature_enrichment_map = (
+            self.literature_llm_enrichment_repository.find_latest_by_literature_keys(
+                [record.literature_key for record in literature]
+            )
+        )
+        trial_enrichments = [
+            self._clone_trial_enrichment_for_fetch(
+                fetch_run_id=fetch_run_id,
+                enrichment=trial_enrichment_map[record.trial_key],
+            )
+            for record in trials
+            if record.trial_key in trial_enrichment_map
+        ]
+        literature_enrichments = [
+            self._clone_literature_enrichment_for_fetch(
+                fetch_run_id=fetch_run_id,
+                enrichment=literature_enrichment_map[record.literature_key],
+            )
+            for record in literature
+            if record.literature_key in literature_enrichment_map
+        ]
+        cached_trial_keys = {record.trial_key for record in trial_enrichments}
+        cached_literature_keys = {record.literature_key for record in literature_enrichments}
+
         if self.llm_client is None or self.trial_enhancement_service is None:
             warnings.append(
                 WarningItem(
                     code="llm_enrichment_disabled",
                     level=WarningLevel.WARNING,
                     scope=WarningScope.BUNDLE,
-                    message="LLM enrichment is not configured; analysis continues with rule-score fallback only.",
+                    message=(
+                        "LLM enrichment is not configured; cached enrichments are reused "
+                        "where available and remaining records continue with rule-score fallback."
+                    ),
                     details={"model": self.llm_model},
                 )
             )
-            return [], [], warnings
+            return trial_enrichments, literature_enrichments, warnings
 
         selected_trials, selected_literature = self._select_llm_candidates(
             trial_rule_scores=trial_rule_scores,
@@ -201,8 +232,9 @@ class AnalysisPipelineService:
                 )
             )
 
-        trial_enrichments: list[TrialLLMEnrichment] = []
         for trial in selected_trials:
+            if trial.trial_key in cached_trial_keys:
+                continue
             try:
                 trial_enrichments.append(
                     self.trial_enhancement_service.enhance(
@@ -222,10 +254,11 @@ class AnalysisPipelineService:
                     )
                 )
 
-        literature_enrichments: list[LiteratureLLMEnrichment] = []
         if self.literature_enhancement_service is None:
             return trial_enrichments, literature_enrichments, warnings
         for paper in selected_literature:
+            if paper.literature_key in cached_literature_keys:
+                continue
             try:
                 literature_enrichments.append(
                     self.literature_enhancement_service.enhance(
@@ -298,7 +331,8 @@ class AnalysisPipelineService:
                     scope=WarningScope.BUNDLE,
                     message=(
                         "Selective LLM enrichment is enabled with top_n=0; "
-                        "analysis continues with rule-score fallback only."
+                        "no new LLM generations will run, but cached enrichments "
+                        "will still be reused where available."
                     ),
                     details={
                         "top_n": self.llm_enrichment_top_n,
@@ -322,8 +356,9 @@ class AnalysisPipelineService:
                     level=WarningLevel.WARNING,
                     scope=WarningScope.BUNDLE,
                     message=(
-                        "Selective LLM enrichment is enabled; only top-ranked records "
-                        "received structured LLM enhancement."
+                        "Selective LLM enrichment is enabled; new LLM generation only "
+                        "runs for top-ranked cache misses, while cached enrichments are "
+                        "reused across the full current fetch."
                     ),
                     details={
                         "top_n": self.llm_enrichment_top_n,
@@ -335,6 +370,119 @@ class AnalysisPipelineService:
                 )
             )
         return warnings
+
+    def _build_normalized_trials(
+        self,
+        raw_records: list[RawRecord],
+    ) -> list[NormalizedTrialRecord]:
+        grouped_records = self._group_trial_records_by_key(raw_records)
+        cached_records = self.normalized_trial_record_repository.find_latest_by_trial_keys(
+            list(grouped_records.keys())
+        )
+        normalized_records: list[NormalizedTrialRecord] = []
+        for trial_key, records in grouped_records.items():
+            cached = cached_records.get(trial_key)
+            if cached is not None:
+                normalized_records.append(
+                    self._clone_trial_record_for_fetch(
+                        cached_record=cached,
+                        raw_records=records,
+                    )
+                )
+                continue
+            normalized_records.extend(self.trial_normalizer.normalize_many(records))
+        return normalized_records
+
+    def _build_normalized_literature(
+        self,
+        raw_records: list[RawRecord],
+    ) -> list[NormalizedLiteratureRecord]:
+        grouped_records = self._group_literature_records_by_key(raw_records)
+        cached_records = (
+            self.normalized_literature_record_repository.find_latest_by_literature_keys(
+                list(grouped_records.keys())
+            )
+        )
+        normalized_records: list[NormalizedLiteratureRecord] = []
+        for literature_key, records in grouped_records.items():
+            cached = cached_records.get(literature_key)
+            if cached is not None:
+                normalized_records.append(
+                    self._clone_literature_record_for_fetch(
+                        cached_record=cached,
+                        raw_records=records,
+                    )
+                )
+                continue
+            normalized_records.extend(self.literature_normalizer.normalize_many(records))
+        return normalized_records
+
+    def _group_trial_records_by_key(
+        self,
+        raw_records: list[RawRecord],
+    ) -> dict[str, list[RawRecord]]:
+        grouped: dict[str, list[RawRecord]] = {}
+        for record in raw_records:
+            if record.source_name != SourceName.CLINICALTRIALS:
+                continue
+            trial_key = self.trial_normalizer.extract_trial_key(record)
+            grouped.setdefault(trial_key, []).append(record)
+        return grouped
+
+    def _group_literature_records_by_key(
+        self,
+        raw_records: list[RawRecord],
+    ) -> dict[str, list[RawRecord]]:
+        grouped: dict[str, list[RawRecord]] = {}
+        for record in raw_records:
+            if record.source_name != SourceName.PUBMED:
+                continue
+            literature_key = self.literature_normalizer.extract_literature_key(record)
+            grouped.setdefault(literature_key, []).append(record)
+        return grouped
+
+    def _clone_trial_record_for_fetch(
+        self,
+        *,
+        cached_record: NormalizedTrialRecord,
+        raw_records: list[RawRecord],
+    ) -> NormalizedTrialRecord:
+        cloned = cached_record.model_copy(deep=True)
+        # Cross-fetch cache reuse should preserve the stable normalized business fields,
+        # but tracing must always point at the raw records that participated in the
+        # current fetch run so downstream debugging and source display stay correct.
+        cloned.source_traces = [
+            self.trial_normalizer.build_source_trace(record) for record in raw_records
+        ]
+        return cloned
+
+    def _clone_literature_record_for_fetch(
+        self,
+        *,
+        cached_record: NormalizedLiteratureRecord,
+        raw_records: list[RawRecord],
+    ) -> NormalizedLiteratureRecord:
+        cloned = cached_record.model_copy(deep=True)
+        cloned.source_traces = [
+            self.literature_normalizer.build_source_trace(record) for record in raw_records
+        ]
+        return cloned
+
+    def _clone_trial_enrichment_for_fetch(
+        self,
+        *,
+        fetch_run_id: str,
+        enrichment: TrialLLMEnrichment,
+    ) -> TrialLLMEnrichment:
+        return enrichment.model_copy(update={"fetch_run_id": fetch_run_id}, deep=True)
+
+    def _clone_literature_enrichment_for_fetch(
+        self,
+        *,
+        fetch_run_id: str,
+        enrichment: LiteratureLLMEnrichment,
+    ) -> LiteratureLLMEnrichment:
+        return enrichment.model_copy(update={"fetch_run_id": fetch_run_id}, deep=True)
 
     def _build_llm_record_warning(
         self,

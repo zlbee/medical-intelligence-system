@@ -43,6 +43,17 @@ class TrialNormalizer:
             normalized_by_key[normalized.trial_key] = self._merge(existing, normalized)
         return list(normalized_by_key.values())
 
+    def extract_trial_key(self, record: RawRecord) -> str:
+        if record.source_name != SourceName.CLINICALTRIALS:
+            raise ValueError("TrialNormalizer only accepts ClinicalTrials.gov records.")
+        identification = get_nested(
+            record.payload,
+            "protocolSection",
+            "identificationModule",
+            default={},
+        ) or {}
+        return clean_text(identification.get("nctId")) or clean_text(record.source_id) or record.record_id
+
     def normalize(self, record: RawRecord) -> NormalizedTrialRecord:
         if record.source_name != SourceName.CLINICALTRIALS:
             raise ValueError("TrialNormalizer only accepts ClinicalTrials.gov records.")
@@ -62,7 +73,7 @@ class TrialNormalizer:
         condition_browse = derived.get("conditionBrowseModule", {}) or {}
         intervention_browse = derived.get("interventionBrowseModule", {}) or {}
 
-        nct_id = clean_text(identification.get("nctId")) or clean_text(record.source_id)
+        nct_id = self.extract_trial_key(record)
         brief_summary = clean_text(description.get("briefSummary"))
         detailed_description = clean_text(description.get("detailedDescription"))
         summary = detailed_description or brief_summary
@@ -71,7 +82,7 @@ class TrialNormalizer:
         normalized = NormalizedTrialRecord(
             trial_key=nct_id or record.record_id,
             nct_id=nct_id,
-            source_traces=[self._build_source_trace(record)],
+            source_traces=[self.build_source_trace(record)],
             brief_title=clean_text(identification.get("briefTitle")),
             official_title=clean_text(identification.get("officialTitle")),
             acronym=clean_text(identification.get("acronym")),
@@ -165,7 +176,7 @@ class TrialNormalizer:
                 setattr(merged, field_name, getattr(incoming, field_name))
         return merged
 
-    def _build_source_trace(self, record: RawRecord) -> SourceTrace:
+    def build_source_trace(self, record: RawRecord) -> SourceTrace:
         return SourceTrace(
             raw_record_id=record.record_id,
             fetch_run_id=record.fetch_run_id,

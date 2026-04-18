@@ -46,3 +46,28 @@ class LiteratureLLMEnrichmentRepository:
         return [
             LiteratureLLMEnrichment.model_validate(model.payload) for model in models
         ]
+
+    def find_latest_by_literature_keys(
+        self,
+        literature_keys: list[str],
+    ) -> dict[str, LiteratureLLMEnrichment]:
+        if not literature_keys:
+            return {}
+        statement = (
+            select(LiteratureLLMEnrichmentModel)
+            .where(LiteratureLLMEnrichmentModel.literature_key.in_(literature_keys))
+            .order_by(
+                LiteratureLLMEnrichmentModel.literature_key.asc(),
+                LiteratureLLMEnrichmentModel.created_at.desc(),
+                LiteratureLLMEnrichmentModel.id.desc(),
+            )
+        )
+        models = self.session.scalars(statement).all()
+        latest_by_key: dict[str, LiteratureLLMEnrichment] = {}
+        for model in models:
+            if model.literature_key in latest_by_key:
+                continue
+            latest_by_key[model.literature_key] = LiteratureLLMEnrichment.model_validate(
+                model.payload
+            )
+        return latest_by_key

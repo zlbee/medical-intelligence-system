@@ -241,6 +241,101 @@ def test_analysis_pipeline_can_skip_llm_when_selective_top_n_is_zero() -> None:
     session.close()
 
 
+def test_analysis_pipeline_reuses_cached_stage2_results_across_fetch_runs() -> None:
+    initialize_database()
+    session = SessionLocal()
+    _clear_tables(session)
+    first_fetch_run_id = _seed_fetch_run(session)
+    AnalysisPipelineService(
+        session,
+        llm_client=StubLLMClient(
+            responses=[
+                _trial_llm_response(summary="Cached trial enrichment."),
+                _literature_llm_response(summary="Cached literature enrichment."),
+            ]
+        ),
+        llm_model="test-model",
+    ).build(first_fetch_run_id)
+
+    second_fetch_run_id = _seed_fetch_run(session)
+    trial_normalizer = CountingTrialNormalizer()
+    literature_normalizer = CountingLiteratureNormalizer()
+    service = AnalysisPipelineService(
+        session,
+        llm_client=FailingLLMClient(),
+        llm_model="test-model",
+    )
+    service.trial_normalizer = trial_normalizer
+    service.literature_normalizer = literature_normalizer
+
+    bundle = service.build(second_fetch_run_id)
+    normalized_trials = service.list_normalized_trials(second_fetch_run_id)
+    normalized_literature = service.list_normalized_literature(second_fetch_run_id)
+    trial_enrichments = service.trial_llm_enrichment_repository.list_by_fetch_run(
+        second_fetch_run_id
+    )
+    literature_enrichments = service.literature_llm_enrichment_repository.list_by_fetch_run(
+        second_fetch_run_id
+    )
+
+    assert trial_normalizer.normalize_many_calls == 0
+    assert trial_normalizer.normalize_calls == 0
+    assert literature_normalizer.normalize_many_calls == 0
+    assert literature_normalizer.normalize_calls == 0
+    assert bundle.llm_enrichment_summary.trial_succeeded == 1
+    assert bundle.llm_enrichment_summary.literature_succeeded == 1
+    assert normalized_trials[0].source_traces[0].fetch_run_id == second_fetch_run_id
+    assert normalized_literature[0].source_traces[0].fetch_run_id == second_fetch_run_id
+    assert trial_enrichments[0].fetch_run_id == second_fetch_run_id
+    assert literature_enrichments[0].fetch_run_id == second_fetch_run_id
+
+    session.close()
+
+
+def test_analysis_pipeline_reuses_cached_enrichments_outside_top_n() -> None:
+    initialize_database()
+    session = SessionLocal()
+    _clear_tables(session)
+    first_fetch_run_id = _seed_fetch_run_with_multiple_records(session)
+    AnalysisPipelineService(
+        session,
+        llm_client=StubLLMClient(
+            responses=[
+                _trial_llm_response(summary="Cached primary trial."),
+                _trial_llm_response(summary="Cached secondary trial."),
+                _literature_llm_response(summary="Cached primary paper."),
+                _literature_llm_response(summary="Cached secondary paper."),
+            ]
+        ),
+        llm_model="test-model",
+    ).build(first_fetch_run_id)
+
+    second_fetch_run_id = _seed_fetch_run_with_multiple_records(session)
+    service = AnalysisPipelineService(
+        session,
+        llm_client=FailingLLMClient(),
+        llm_model="test-model",
+        llm_enrichment_full_scan=False,
+        llm_enrichment_top_n=1,
+    )
+
+    bundle = service.build(second_fetch_run_id)
+
+    assert bundle.llm_enrichment_summary.trial_succeeded == 2
+    assert bundle.llm_enrichment_summary.literature_succeeded == 2
+    assert {item.trial_key for item in bundle.trial_llm_enrichments} == {
+        "NCT03188393",
+        "NCT09999999",
+    }
+    assert {item.literature_key for item in bundle.literature_llm_enrichments} == {
+        "12345678",
+        "87654321",
+    }
+    assert any(item.code == "llm_enrichment_top_n_applied" for item in bundle.warnings)
+
+    session.close()
+
+
 class StubLLMClient:
     def __init__(self, *, responses: list[dict | Exception]) -> None:
         self.responses = responses
@@ -251,6 +346,57 @@ class StubLLMClient:
         if isinstance(response, Exception):
             raise response
         return response_model.model_validate(response)
+
+
+class FailingLLMClient:
+    def generate_structured(self, **kwargs):
+        raise AssertionError("LLM should not be called when cache reuse is working.")
+
+
+class CountingTrialNormalizer:
+    def __init__(self) -> None:
+        from app.normalize import TrialNormalizer
+
+        self._delegate = TrialNormalizer()
+        self.normalize_many_calls = 0
+        self.normalize_calls = 0
+
+    def normalize_many(self, records):
+        self.normalize_many_calls += 1
+        return self._delegate.normalize_many(records)
+
+    def normalize(self, record):
+        self.normalize_calls += 1
+        return self._delegate.normalize(record)
+
+    def extract_trial_key(self, record):
+        return self._delegate.extract_trial_key(record)
+
+    def build_source_trace(self, record):
+        return self._delegate.build_source_trace(record)
+
+
+class CountingLiteratureNormalizer:
+    def __init__(self) -> None:
+        from app.normalize import LiteratureNormalizer
+
+        self._delegate = LiteratureNormalizer()
+        self.normalize_many_calls = 0
+        self.normalize_calls = 0
+
+    def normalize_many(self, records):
+        self.normalize_many_calls += 1
+        return self._delegate.normalize_many(records)
+
+    def normalize(self, record):
+        self.normalize_calls += 1
+        return self._delegate.normalize(record)
+
+    def extract_literature_key(self, record):
+        return self._delegate.extract_literature_key(record)
+
+    def build_source_trace(self, record):
+        return self._delegate.build_source_trace(record)
 
 
 def _trial_llm_response(*, summary: str) -> dict:

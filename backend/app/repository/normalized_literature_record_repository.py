@@ -47,3 +47,28 @@ class NormalizedLiteratureRecordRepository:
             NormalizedLiteratureRecord.model_validate(model.payload)
             for model in models
         ]
+
+    def find_latest_by_literature_keys(
+        self,
+        literature_keys: list[str],
+    ) -> dict[str, NormalizedLiteratureRecord]:
+        if not literature_keys:
+            return {}
+        statement = (
+            select(NormalizedLiteratureRecordModel)
+            .where(NormalizedLiteratureRecordModel.literature_key.in_(literature_keys))
+            .order_by(
+                NormalizedLiteratureRecordModel.literature_key.asc(),
+                NormalizedLiteratureRecordModel.created_at.desc(),
+                NormalizedLiteratureRecordModel.id.desc(),
+            )
+        )
+        models = self.session.scalars(statement).all()
+        latest_by_key: dict[str, NormalizedLiteratureRecord] = {}
+        for model in models:
+            if model.literature_key in latest_by_key:
+                continue
+            latest_by_key[model.literature_key] = NormalizedLiteratureRecord.model_validate(
+                model.payload
+            )
+        return latest_by_key

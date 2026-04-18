@@ -38,6 +38,21 @@ class LiteratureNormalizer:
             normalized_by_key[normalized.literature_key] = self._merge(existing, normalized)
         return list(normalized_by_key.values())
 
+    def extract_literature_key(self, record: RawRecord) -> str:
+        if record.source_name != SourceName.PUBMED:
+            raise ValueError("LiteratureNormalizer only accepts PubMed records.")
+        xml_text = record.payload.get("xml")
+        if isinstance(xml_text, str) and xml_text.strip():
+            try:
+                root = ET.fromstring(xml_text)
+            except ET.ParseError:
+                root = None
+            medline = root.find("./MedlineCitation") if root is not None else None
+            pmid = clean_text(self._find_text(medline, "./PMID"))
+            if pmid:
+                return pmid
+        return clean_text(record.source_id) or record.record_id
+
     def normalize(self, record: RawRecord) -> NormalizedLiteratureRecord:
         if record.source_name != SourceName.PUBMED:
             raise ValueError("LiteratureNormalizer only accepts PubMed records.")
@@ -51,7 +66,7 @@ class LiteratureNormalizer:
         article = root.find("./MedlineCitation/Article")
         pubmed_data = root.find("./PubmedData")
 
-        pmid = clean_text(self._find_text(medline, "./PMID")) or clean_text(record.source_id)
+        pmid = clean_text(self._find_text(medline, "./PMID")) or self.extract_literature_key(record)
         doi = self._extract_doi(article, pubmed_data)
         abstract_sections = self._extract_abstract_sections(article, "./Abstract/AbstractText")
         other_abstracts = self._extract_abstract_sections(article, "./OtherAbstract/AbstractText")
@@ -74,7 +89,7 @@ class LiteratureNormalizer:
             literature_key=pmid or record.record_id,
             pmid=pmid,
             doi=doi,
-            source_traces=[self._build_source_trace(record)],
+            source_traces=[self.build_source_trace(record)],
             title=clean_text(self._find_text(article, "./ArticleTitle")),
             journal=clean_text(self._find_text(article, "./Journal/Title")),
             publication_date=self._extract_publication_date(article),
@@ -132,7 +147,7 @@ class LiteratureNormalizer:
                 setattr(merged, field_name, getattr(incoming, field_name))
         return merged
 
-    def _build_source_trace(self, record: RawRecord) -> SourceTrace:
+    def build_source_trace(self, record: RawRecord) -> SourceTrace:
         return SourceTrace(
             raw_record_id=record.record_id,
             fetch_run_id=record.fetch_run_id,
