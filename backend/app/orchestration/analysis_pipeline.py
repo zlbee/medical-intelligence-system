@@ -11,6 +11,9 @@ from app.analyze.scoring import build_literature_rule_scores, build_trial_rule_s
 from app.domain import (
     AnalysisReadyBundle,
     LiteratureLLMEnrichment,
+    NormalizedLiteratureRecord,
+    NormalizedTrialRecord,
+    RuleScoreBreakdown,
     SourceName,
     TargetQuery,
     TrialLLMEnrichment,
@@ -41,10 +44,14 @@ class AnalysisPipelineService:
         *,
         llm_client: LLMClient | None = None,
         llm_model: str | None = None,
+        llm_enrichment_full_scan: bool = True,
+        llm_enrichment_top_n: int = 20,
     ) -> None:
         self.session = session
         self.llm_client = llm_client
         self.llm_model = llm_model
+        self.llm_enrichment_full_scan = llm_enrichment_full_scan
+        self.llm_enrichment_top_n = llm_enrichment_top_n
         self.fetch_run_repository = FetchRunRepository(session)
         self.raw_record_repository = RawRecordRepository(session)
         self.normalized_trial_record_repository = NormalizedTrialRecordRepository(session)
@@ -156,10 +163,10 @@ class AnalysisPipelineService:
         *,
         fetch_run_id: str,
         query: TargetQuery,
-        trial_rule_scores: dict[str, object],
-        literature_rule_scores: dict[str, object],
-        trials,
-        literature,
+        trial_rule_scores: dict[str, RuleScoreBreakdown],
+        literature_rule_scores: dict[str, RuleScoreBreakdown],
+        trials: list[NormalizedTrialRecord],
+        literature: list[NormalizedLiteratureRecord],
     ) -> tuple[
         list[TrialLLMEnrichment],
         list[LiteratureLLMEnrichment],
@@ -178,8 +185,24 @@ class AnalysisPipelineService:
             )
             return [], [], warnings
 
+        selected_trials, selected_literature = self._select_llm_candidates(
+            trial_rule_scores=trial_rule_scores,
+            literature_rule_scores=literature_rule_scores,
+            trials=trials,
+            literature=literature,
+        )
+        if not self.llm_enrichment_full_scan:
+            warnings.extend(
+                self._build_selective_enrichment_warnings(
+                    trial_candidates=selected_trials,
+                    literature_candidates=selected_literature,
+                    total_trial_count=len(trials),
+                    total_literature_count=len(literature),
+                )
+            )
+
         trial_enrichments: list[TrialLLMEnrichment] = []
-        for trial in trials:
+        for trial in selected_trials:
             try:
                 trial_enrichments.append(
                     self.trial_enhancement_service.enhance(
@@ -202,7 +225,7 @@ class AnalysisPipelineService:
         literature_enrichments: list[LiteratureLLMEnrichment] = []
         if self.literature_enhancement_service is None:
             return trial_enrichments, literature_enrichments, warnings
-        for paper in literature:
+        for paper in selected_literature:
             try:
                 literature_enrichments.append(
                     self.literature_enhancement_service.enhance(
@@ -222,6 +245,96 @@ class AnalysisPipelineService:
                     )
                 )
         return trial_enrichments, literature_enrichments, warnings
+
+    def _select_llm_candidates(
+        self,
+        *,
+        trial_rule_scores: dict[str, RuleScoreBreakdown],
+        literature_rule_scores: dict[str, RuleScoreBreakdown],
+        trials: list[NormalizedTrialRecord],
+        literature: list[NormalizedLiteratureRecord],
+    ) -> tuple[list[NormalizedTrialRecord], list[NormalizedLiteratureRecord]]:
+        if self.llm_enrichment_full_scan:
+            return trials, literature
+        if self.llm_enrichment_top_n == 0:
+            return [], []
+
+        ranked_trials = sorted(
+            trials,
+            key=lambda record: (
+                trial_rule_scores[record.trial_key].overall_score,
+                record.trial_key,
+            ),
+            reverse=True,
+        )
+        ranked_literature = sorted(
+            literature,
+            key=lambda record: (
+                literature_rule_scores[record.literature_key].overall_score,
+                self._literature_publication_ordinal(record),
+                record.literature_key,
+            ),
+            reverse=True,
+        )
+        return (
+            ranked_trials[: self.llm_enrichment_top_n],
+            ranked_literature[: self.llm_enrichment_top_n],
+        )
+
+    def _build_selective_enrichment_warnings(
+        self,
+        *,
+        trial_candidates: list[NormalizedTrialRecord],
+        literature_candidates: list[NormalizedLiteratureRecord],
+        total_trial_count: int,
+        total_literature_count: int,
+    ) -> list[WarningItem]:
+        warnings: list[WarningItem] = []
+        if self.llm_enrichment_top_n == 0:
+            warnings.append(
+                WarningItem(
+                    code="llm_enrichment_top_n_zero",
+                    level=WarningLevel.WARNING,
+                    scope=WarningScope.BUNDLE,
+                    message=(
+                        "Selective LLM enrichment is enabled with top_n=0; "
+                        "analysis continues with rule-score fallback only."
+                    ),
+                    details={
+                        "top_n": self.llm_enrichment_top_n,
+                        "total_trial_count": total_trial_count,
+                        "total_literature_count": total_literature_count,
+                    },
+                )
+            )
+            return warnings
+
+        if (
+            len(trial_candidates) < total_trial_count
+            or len(literature_candidates) < total_literature_count
+        ):
+            # When scale is large, we pre-rank by deterministic rule scores so the LLM
+            # budget is focused on the most promising records while every downstream
+            # consumer still retains rule-score fallback for the unenhanced tail.
+            warnings.append(
+                WarningItem(
+                    code="llm_enrichment_top_n_applied",
+                    level=WarningLevel.WARNING,
+                    scope=WarningScope.BUNDLE,
+                    message=(
+                        "Selective LLM enrichment is enabled; only top-ranked records "
+                        "received structured LLM enhancement."
+                    ),
+                    details={
+                        "top_n": self.llm_enrichment_top_n,
+                        "trial_candidates": len(trial_candidates),
+                        "total_trial_count": total_trial_count,
+                        "literature_candidates": len(literature_candidates),
+                        "total_literature_count": total_literature_count,
+                    },
+                )
+            )
+        return warnings
 
     def _build_llm_record_warning(
         self,
@@ -247,6 +360,14 @@ class AnalysisPipelineService:
                 "error": str(exc),
             },
         )
+
+    def _literature_publication_ordinal(
+        self,
+        literature: NormalizedLiteratureRecord,
+    ) -> int:
+        if literature.publication_date and literature.publication_date.value:
+            return literature.publication_date.value.toordinal()
+        return 0
 
     def _ensure_fetch_run(self, fetch_run_id: str) -> None:
         if self.fetch_run_repository.get(fetch_run_id) is None:

@@ -50,6 +50,8 @@ def get_analysis_pipeline_service(
         session,
         llm_client=llm_client,
         llm_model=settings.llm_default_model,
+        llm_enrichment_full_scan=settings.analysis_llm_enrichment_full_scan,
+        llm_enrichment_top_n=settings.analysis_llm_enrichment_top_n,
     )
 
 

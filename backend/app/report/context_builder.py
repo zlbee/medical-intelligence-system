@@ -194,7 +194,7 @@ class ReportContextBuilder:
             global_stats=self._build_relevant_global_stats(bundle, section_name),
             selection_notes=section_input.selection_notes,
             truncation_notes=section_input.truncation_notes,
-            warnings=context_warnings,
+            warnings=list(dict.fromkeys(context_warnings)),
             coverage_notes=coverage_notes,
             trials=selected_trials,
             literature=selected_literature,

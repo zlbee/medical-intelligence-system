@@ -48,7 +48,6 @@ const defaultSourceConfigs = JSON.stringify(
       max_pages: 1,
       count_total: true,
       query: {
-        intr: "HER2",
         term: `(AREA[Phase]\"Phase 2\" OR AREA[Phase]\"Phase 3\") AND AREA[LastUpdatePostDate]RANGE[${formatClinicalTrialsDate(oneYearAgo)}, MAX]`,
       },
       filters: {

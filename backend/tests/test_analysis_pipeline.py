@@ -190,6 +190,57 @@ def test_analysis_pipeline_keeps_best_effort_when_one_llm_record_fails() -> None
     session.close()
 
 
+def test_analysis_pipeline_can_limit_llm_enrichment_to_rule_score_top_n() -> None:
+    initialize_database()
+    session = SessionLocal()
+    _clear_tables(session)
+    fetch_run_id = _seed_fetch_run_with_multiple_records(session)
+
+    bundle = AnalysisPipelineService(
+        session,
+        llm_client=StubLLMClient(
+            responses=[
+                _trial_llm_response(summary="Top-ranked HER2 trial."),
+                _literature_llm_response(summary="Top-ranked HER2 paper."),
+            ]
+        ),
+        llm_model="test-model",
+        llm_enrichment_full_scan=False,
+        llm_enrichment_top_n=1,
+    ).build(fetch_run_id)
+
+    assert bundle.llm_enrichment_summary.trial_total == 2
+    assert bundle.llm_enrichment_summary.trial_succeeded == 1
+    assert bundle.llm_enrichment_summary.literature_total == 2
+    assert bundle.llm_enrichment_summary.literature_succeeded == 1
+    assert [item.trial_key for item in bundle.trial_llm_enrichments] == ["NCT03188393"]
+    assert [item.literature_key for item in bundle.literature_llm_enrichments] == ["12345678"]
+    assert any(item.code == "llm_enrichment_top_n_applied" for item in bundle.warnings)
+
+    session.close()
+
+
+def test_analysis_pipeline_can_skip_llm_when_selective_top_n_is_zero() -> None:
+    initialize_database()
+    session = SessionLocal()
+    _clear_tables(session)
+    fetch_run_id = _seed_fetch_run(session)
+
+    bundle = AnalysisPipelineService(
+        session,
+        llm_client=StubLLMClient(responses=[]),
+        llm_model="test-model",
+        llm_enrichment_full_scan=False,
+        llm_enrichment_top_n=0,
+    ).build(fetch_run_id)
+
+    assert bundle.llm_enrichment_summary.trial_succeeded == 0
+    assert bundle.llm_enrichment_summary.literature_succeeded == 0
+    assert any(item.code == "llm_enrichment_top_n_zero" for item in bundle.warnings)
+
+    session.close()
+
+
 class StubLLMClient:
     def __init__(self, *, responses: list[dict | Exception]) -> None:
         self.responses = responses
@@ -200,6 +251,108 @@ class StubLLMClient:
         if isinstance(response, Exception):
             raise response
         return response_model.model_validate(response)
+
+
+def _trial_llm_response(*, summary: str) -> dict:
+    return {
+        "dimension_insights": {
+            "target_overview": {
+                "can_contribute": True,
+                "relevance_score": 88,
+                "confidence": 72,
+                "summary": summary,
+                "key_points": ["Mentions HER2 and breast cancer."],
+                "evidence_snippets": [],
+            },
+            "pipeline_overview": {
+                "can_contribute": True,
+                "relevance_score": 90,
+                "confidence": 81,
+                "summary": "Active phase 2 pipeline asset.",
+                "key_points": ["Recruiting phase 2 study."],
+                "evidence_snippets": [],
+            },
+            "research_update": {
+                "can_contribute": False,
+                "relevance_score": 35,
+                "confidence": 64,
+                "summary": "Limited direct recency insight.",
+                "key_points": [],
+                "evidence_snippets": [],
+            },
+            "competition_assessment": {
+                "can_contribute": True,
+                "relevance_score": 79,
+                "confidence": 75,
+                "summary": "Sponsor and phase are useful for competition.",
+                "key_points": ["Sponsor identified."],
+                "evidence_snippets": [],
+            },
+        },
+        "llm_scores": {
+            "target_overview": 86,
+            "pipeline_overview": 92,
+            "research_update": 30,
+            "competition_assessment": 80,
+            "overall_score": 77,
+        },
+        "modality": "drug",
+        "asset_candidates": ["Example Drug"],
+        "company_candidates": ["Example Sponsor"],
+        "risk_signals": ["No published results yet."],
+        "opportunity_signals": ["Recruiting phase 2 study."],
+    }
+
+
+def _literature_llm_response(*, summary: str) -> dict:
+    return {
+        "dimension_insights": {
+            "target_overview": {
+                "can_contribute": True,
+                "relevance_score": 88,
+                "confidence": 72,
+                "summary": summary,
+                "key_points": ["Summarizes HER2-targeted therapy."],
+                "evidence_snippets": [],
+            },
+            "pipeline_overview": {
+                "can_contribute": False,
+                "relevance_score": 40,
+                "confidence": 65,
+                "summary": "Secondary pipeline context only.",
+                "key_points": [],
+                "evidence_snippets": [],
+            },
+            "research_update": {
+                "can_contribute": True,
+                "relevance_score": 95,
+                "confidence": 88,
+                "summary": "Recent and strong study update.",
+                "key_points": ["Recent publication with NCT linkage."],
+                "evidence_snippets": [],
+            },
+            "competition_assessment": {
+                "can_contribute": True,
+                "relevance_score": 76,
+                "confidence": 71,
+                "summary": "Useful competitive readout.",
+                "key_points": ["Contains trial linkage."],
+                "evidence_snippets": [],
+            },
+        },
+        "llm_scores": {
+            "target_overview": 89,
+            "pipeline_overview": 35,
+            "research_update": 93,
+            "competition_assessment": 74,
+            "overall_score": 78,
+        },
+        "study_design": "Clinical Trial",
+        "mechanism_themes": ["HER2 targeting"],
+        "efficacy_signals": ["Promising efficacy signal."],
+        "safety_signals": ["Manageable safety profile."],
+        "trial_link_hints": ["NCT03188393"],
+    }
 
 
 def _seed_fetch_run(session) -> str:
@@ -265,6 +418,92 @@ def _seed_fetch_run(session) -> str:
         ]
     )
     return fetch_run.fetch_run_id
+
+
+def _seed_fetch_run_with_multiple_records(session) -> str:
+    fetch_run_id = _seed_fetch_run(session)
+    RawRecordRepository(session).create_many(
+        [
+            RawRecord(
+                fetch_run_id=fetch_run_id,
+                source_name=SourceName.CLINICALTRIALS,
+                source_id="NCT09999999",
+                source_url="https://clinicaltrials.gov/study/NCT09999999",
+                target="HER2",
+                indication="breast cancer",
+                payload={
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT09999999",
+                            "briefTitle": "General solid tumor study",
+                        },
+                        "statusModule": {
+                            "overallStatus": "ACTIVE_NOT_RECRUITING",
+                            "studyFirstPostDateStruct": {"date": "2022-01-01"},
+                        },
+                        "descriptionModule": {
+                            "briefSummary": "A general oncology study without direct HER2 focus.",
+                        },
+                        "sponsorCollaboratorsModule": {
+                            "leadSponsor": {"name": "Other Sponsor"},
+                        },
+                        "conditionsModule": {
+                            "conditions": ["Solid Tumor"],
+                            "keywords": ["oncology"],
+                        },
+                        "designModule": {
+                            "studyType": "INTERVENTIONAL",
+                            "phases": ["PHASE1"],
+                        },
+                        "armsInterventionsModule": {
+                            "interventions": [{"type": "DRUG", "name": "Other Drug"}]
+                        },
+                    }
+                },
+                query_snapshot={"source": "clinicaltrials"},
+                retrieved_at=datetime.now(timezone.utc),
+            ),
+            RawRecord(
+                fetch_run_id=fetch_run_id,
+                source_name=SourceName.PUBMED,
+                source_id="87654321",
+                source_url="https://pubmed.ncbi.nlm.nih.gov/87654321/",
+                target="HER2",
+                indication="breast cancer",
+                payload={
+                    "xml": """
+<PubmedArticle>
+  <MedlineCitation>
+    <PMID Version=\"1\">87654321</PMID>
+    <Article>
+      <Journal>
+        <JournalIssue>
+          <PubDate>
+            <Year>2021</Year>
+            <Month>Jan</Month>
+            <Day>01</Day>
+          </PubDate>
+        </JournalIssue>
+        <Title>General Oncology Journal</Title>
+      </Journal>
+      <ArticleTitle>General oncology update.</ArticleTitle>
+      <Abstract>
+        <AbstractText>A broad oncology review without HER2-specific findings.</AbstractText>
+      </Abstract>
+      <PublicationTypeList>
+        <PublicationType>Review</PublicationType>
+      </PublicationTypeList>
+    </Article>
+  </MedlineCitation>
+</PubmedArticle>
+""".strip()
+                },
+                query_snapshot={"source": "pubmed"},
+                retrieved_at=datetime.now(timezone.utc),
+            ),
+        ]
+    )
+    return fetch_run_id
 
 
 def _clear_tables(session) -> None:

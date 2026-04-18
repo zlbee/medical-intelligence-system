@@ -21,6 +21,12 @@
 
 如需覆盖默认配置，可复制根目录 `.env.example` 为 `.env` 并按需修改；不复制也可直接使用默认值启动。
 其中 `MIS_CORS_ORIGINS` 需要使用 JSON 数组格式，例如 `["http://localhost:5173","http://127.0.0.1:5173"]`。
+阶段 2 的 LLM 增强还支持两项控制：
+
+- `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=true`
+  默认全量逐条做记录级 LLM 增强
+- `MIS_ANALYSIS_LLM_ENRICHMENT_TOP_N=20`
+  当 `FULL_SCAN=false` 时生效，表示 trial 和 literature 各自只对规则分排名前 `N` 条记录执行 LLM 增强
 
 ### 2. Docker 启动
 

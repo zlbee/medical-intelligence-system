@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     llm_openrouter_base_url: str = "https://openrouter.ai/api/v1"
     llm_openrouter_site_url: str | None = None
     llm_openrouter_app_title: str = "Medical Intelligence System"
+    analysis_llm_enrichment_full_scan: bool = True
+    analysis_llm_enrichment_top_n: int = 20
 
     model_config = SettingsConfigDict(
         env_prefix="MIS_",
@@ -59,6 +61,13 @@ class Settings(BaseSettings):
                 if isinstance(parsed, list):
                     return [str(item).strip() for item in parsed if str(item).strip()]
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("analysis_llm_enrichment_top_n")
+    @classmethod
+    def validate_analysis_llm_enrichment_top_n(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("analysis_llm_enrichment_top_n must be >= 0")
         return value
 
 
