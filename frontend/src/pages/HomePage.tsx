@@ -457,24 +457,9 @@ export function HomePage() {
       <section className="hero-card">
         <div className="eyebrow">Medical Intelligence System</div>
         <h1>医疗情报系统</h1>
-        <p className="lead">
-          阶段 1 已接入多源采集链路。当前页面既能验证前后端连通，也能直接提交靶点和 JSON
-          查询配置，查看原始采集结果。
-        </p>
       </section>
 
       <section className="grid">
-        <article className="panel">
-          <h2>当前已落地内容</h2>
-          <ul>
-            <li>FastAPI 后端入口与健康检查接口</li>
-            <li>配置、日志、SQLite 初始化脚手架</li>
-            <li>React + Vite 前端骨架与路由</li>
-            <li>Docker Compose 本地联调环境</li>
-            <li>ClinicalTrials.gov 与 PubMed 双源采集接口</li>
-          </ul>
-        </article>
-
         <article className="panel">
           <h2>后端健康状态</h2>
           {loadState === "loading" && <p>正在检测后端服务状态...</p>}
@@ -510,7 +495,7 @@ export function HomePage() {
       </section>
 
       <section className="panel playground-panel">
-        <h2>阶段 1 采集调试面板</h2>
+        <h2>阶段 1 采集面板</h2>
         <p className="panel-intro">
           这里可以直接输入靶点，并使用 JSON 配置两个来源的查询筛选条件。`page_size`
           / `retmax` / `batch_size` 表示单轮批大小，累计抓取上限由后端环境变量控制。
@@ -625,8 +610,9 @@ export function HomePage() {
               </ul>
             </article>
 
-            <article className="result-card">
-              <h3>阶段 2 分析</h3>
+            {/* Keep stages separate so each workflow surfaces its own actions and status. */}
+            <article className="panel">
+              <h2>阶段 2 分析</h2>
               <p className="panel-intro">
                 在阶段 1 的原始记录基础上执行标准化、统计与章节输入构建。
               </p>
@@ -651,62 +637,10 @@ export function HomePage() {
                 >
                   读取已保存分析快照
                 </button>
-                <button
-                  type="button"
-                  className="action-button"
-                  onClick={handleBuildReport}
-                  disabled={reportState === "loading"}
-                >
-                  {reportState === "loading" && reportAction === "build"
-                    ? "正在生成阶段 3 报告..."
-                    : reportResult
-                      ? "重新生成报告"
-                      : "生成报告"}
-                </button>
-                <button
-                  type="button"
-                  className="action-button action-button-secondary"
-                  onClick={handleDownloadReport}
-                  disabled={reportState === "loading"}
-                >
-                  {reportState === "loading" && reportAction === "download"
-                    ? "正在下载 Markdown..."
-                    : "下载 Markdown 报告"}
-                </button>
               </div>
 
               {analysisState === "error" && (
                 <p className="status status-error">执行失败：{analysisError}</p>
-              )}
-
-              {reportState === "error" && (
-                <p className="status status-error">执行失败：{reportError}</p>
-              )}
-
-              {reportResult && (
-                <article className="result-card analysis-card report-card">
-                  <h3>阶段 3 报告</h3>
-                  <dl className="meta-list">
-                    <div>
-                      <dt>Report ID</dt>
-                      <dd>{reportResult.report_id}</dd>
-                    </div>
-                    <div>
-                      <dt>关联 Bundle</dt>
-                      <dd>{reportResult.analysis_bundle_id}</dd>
-                    </div>
-                    <div>
-                      <dt>生成时间</dt>
-                      <dd>{formatDateTime(reportResult.generated_at)}</dd>
-                    </div>
-                    <div>
-                      <dt>章节数 / Warning</dt>
-                      <dd>
-                        {reportResult.sections.length} / {reportResult.warning_summary.length}
-                      </dd>
-                    </div>
-                  </dl>
-                </article>
               )}
 
               {analysisResult && (
@@ -989,6 +923,67 @@ export function HomePage() {
                     </article>
                   )}
                 </div>
+              )}
+            </article>
+
+            <article className="panel">
+              <h2>阶段 3 报告</h2>
+              <p className="panel-intro">
+                基于阶段 2 分析快照生成 Markdown 报告，并支持直接下载已保存结果。
+              </p>
+              <div className="action-row">
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={handleBuildReport}
+                  disabled={reportState === "loading"}
+                >
+                  {reportState === "loading" && reportAction === "build"
+                    ? "正在生成阶段 3 报告..."
+                    : reportResult
+                      ? "重新生成报告"
+                      : "生成报告"}
+                </button>
+                <button
+                  type="button"
+                  className="action-button action-button-secondary"
+                  onClick={handleDownloadReport}
+                  disabled={reportState === "loading"}
+                >
+                  {reportState === "loading" && reportAction === "download"
+                    ? "正在下载 Markdown..."
+                    : "下载 Markdown 报告"}
+                </button>
+              </div>
+
+              {reportState === "error" && (
+                <p className="status status-error">执行失败：{reportError}</p>
+              )}
+
+              {reportResult && (
+                <article className="result-card analysis-card report-card">
+                  <h3>阶段 3 报告</h3>
+                  <dl className="meta-list">
+                    <div>
+                      <dt>Report ID</dt>
+                      <dd>{reportResult.report_id}</dd>
+                    </div>
+                    <div>
+                      <dt>关联 Bundle</dt>
+                      <dd>{reportResult.analysis_bundle_id}</dd>
+                    </div>
+                    <div>
+                      <dt>生成时间</dt>
+                      <dd>{formatDateTime(reportResult.generated_at)}</dd>
+                    </div>
+                    <div>
+                      <dt>章节数 / Warning</dt>
+                      <dd>
+                        {reportResult.sections.length} / {reportResult.warning_summary.length}
+                      </dd>
+                    </div>
+                  </dl>
+                </article>
               )}
             </article>
           </div>
