@@ -223,6 +223,92 @@ h2 {
   border: 1px solid rgba(19, 48, 64, 0.06);
 }
 
+.chart-card {
+  display: grid;
+  gap: 12px;
+}
+
+.chart-shell {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.chart-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+
+.chart-meta span {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #355869;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.chart-empty {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #ffffff;
+  color: #5e7a88;
+  line-height: 1.6;
+}
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.chart-label,
+.chart-value,
+.chart-axis-label,
+.chart-axis-value,
+.chart-point-value {
+  fill: #355869;
+  font-size: 12px;
+}
+
+.chart-value,
+.chart-point-value {
+  font-weight: 700;
+}
+
+.chart-bar-track {
+  fill: #e4eef4;
+}
+
+.chart-bar-fill {
+  fill: #23707a;
+}
+
+.chart-grid-line {
+  stroke: rgba(53, 88, 105, 0.16);
+  stroke-width: 1;
+}
+
+.chart-area-path {
+  fill: rgba(35, 112, 122, 0.14);
+}
+
+.chart-line-path {
+  fill: none;
+  stroke: #1d5f91;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-point {
+  fill: #ffffff;
+  stroke: #1d5f91;
+  stroke-width: 3;
+}
+
 .report-card {
   margin-top: 12px;
 }
@@ -431,5 +517,13 @@ ul {
 
   .action-row {
     flex-direction: column;
+  }
+
+  .chart-label,
+  .chart-value,
+  .chart-axis-label,
+  .chart-axis-value,
+  .chart-point-value {
+    font-size: 11px;
   }
 }

@@ -32,9 +32,27 @@ type RawRecordSampleGroup = {
   totalCount: number;
   items: RawRecord[];
 };
+type ChartDatum = {
+  label: string;
+  value: number;
+};
+type ChartPoint = ChartDatum & {
+  x: number;
+  y: number;
+};
 
 const MAX_RAW_RECORD_SAMPLES_PER_SOURCE = 5;
 const MAX_RAW_RECORD_FETCH_PER_SOURCE = 200;
+const PHASE_SORT_ORDER: Record<string, number> = {
+  EARLY_PHASE1: 10,
+  PHASE1: 20,
+  PHASE1__PHASE2: 30,
+  PHASE2: 40,
+  PHASE2__PHASE3: 50,
+  PHASE3: 60,
+  PHASE4: 70,
+  NOT_APPLICABLE: 80,
+};
 
 function formatDate(date: Date): string {
   const year = date.getFullYear();
@@ -64,7 +82,7 @@ const defaultSourceConfigs = JSON.stringify(
   {
     clinicaltrials: {
       enabled: true,
-      page_size: 5,
+      page_size: 10,
       count_total: true,
       query: {
         term: defaultClinicalTrialsFilterTerm,
@@ -75,7 +93,7 @@ const defaultSourceConfigs = JSON.stringify(
     },
     pubmed: {
       enabled: true,
-      retmax: 5,
+      retmax: 10,
       batch_size: 5,
       sort: "pub_date",
       filters: {
@@ -123,6 +141,69 @@ function formatNamedCounts(items: NamedCount[], limit = 4): string {
     .slice(0, limit)
     .map((item) => `${item.name} (${item.count})`)
     .join(" / ");
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function formatPhaseToken(token: string): string {
+  const normalized = token.trim().toUpperCase();
+  const explicitLabels: Record<string, string> = {
+    EARLY_PHASE1: "Early Phase 1",
+    PHASE1: "Phase 1",
+    PHASE2: "Phase 2",
+    PHASE3: "Phase 3",
+    PHASE4: "Phase 4",
+    NOT_APPLICABLE: "Not Applicable",
+  };
+  const explicitLabel = explicitLabels[normalized];
+  if (explicitLabel) {
+    return explicitLabel;
+  }
+  return normalized
+    .replace(/PHASE(\d)/g, "Phase $1")
+    .replaceAll("_", " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatPhaseLabel(value: string): string {
+  return value.split("__").map(formatPhaseToken).join(" / ");
+}
+
+function buildPhaseChartData(distribution: Record<string, number>): ChartDatum[] {
+  return Object.entries(distribution)
+    .filter(([, count]) => count > 0)
+    .sort(([leftPhase], [rightPhase]) => {
+      const leftOrder = PHASE_SORT_ORDER[leftPhase] ?? 999;
+      const rightOrder = PHASE_SORT_ORDER[rightPhase] ?? 999;
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+      return leftPhase.localeCompare(rightPhase);
+    })
+    .map(([phase, count]) => ({
+      label: formatPhaseLabel(phase),
+      value: count,
+    }));
+}
+
+function buildPublicationTrendData(distribution: Record<string, number>): ChartDatum[] {
+  return Object.entries(distribution)
+    .filter(([, count]) => count > 0)
+    .sort(([leftYear], [rightYear]) => {
+      const leftValue = Number(leftYear);
+      const rightValue = Number(rightYear);
+      if (Number.isNaN(leftValue) || Number.isNaN(rightValue)) {
+        return leftYear.localeCompare(rightYear);
+      }
+      return leftValue - rightValue;
+    })
+    .map(([year, count]) => ({
+      label: year,
+      value: count,
+    }));
 }
 
 type WarningSummary = {
@@ -400,6 +481,179 @@ function buildReportFileName(report: ReportResponse): string {
   return `${targetPart}-${report.fetch_run_id}.md`;
 }
 
+function buildPolylinePath(points: ChartPoint[]): string {
+  return points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
+}
+
+function buildAreaPath(points: ChartPoint[], baselineY: number): string {
+  if (!points.length) {
+    return "";
+  }
+  const linePath = buildPolylinePath(points);
+  const firstPoint = points[0];
+  const lastPoint = points[points.length - 1];
+  return `${linePath} L ${lastPoint.x} ${baselineY} L ${firstPoint.x} ${baselineY} Z`;
+}
+
+function PhaseDistributionChart({ data }: { data: ChartDatum[] }) {
+  if (!data.length) {
+    return <p className="chart-empty">暂无可视化阶段分布数据。</p>;
+  }
+
+  const chartWidth = 480;
+  const labelColumnWidth = 136;
+  const barAreaWidth = 220;
+  const chartHeight = 18 + data.length * 38;
+  const maxValue = Math.max(...data.map((item) => item.value), 1);
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const topBucket = data.reduce((currentTop, item) =>
+    item.value > currentTop.value ? item : currentTop,
+  );
+
+  return (
+    <div className="chart-shell">
+      <div className="chart-meta">
+        <span>总试验数 {formatNumber(total)}</span>
+        <span>
+          最高频阶段 {topBucket.label} ({formatNumber(topBucket.value)})
+        </span>
+      </div>
+      <svg
+        className="chart-svg"
+        viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+        role="img"
+        aria-label="管线阶段分布图"
+      >
+        {data.map((item, index) => {
+          const y = 18 + index * 38;
+          const barWidth = (item.value / maxValue) * barAreaWidth;
+          return (
+            <g key={item.label} transform={`translate(0 ${y})`}>
+              <text className="chart-label" x={0} y={15}>
+                {item.label}
+              </text>
+              <rect
+                className="chart-bar-track"
+                x={labelColumnWidth}
+                y={0}
+                rx={10}
+                ry={10}
+                width={barAreaWidth}
+                height={20}
+              />
+              <rect
+                className="chart-bar-fill"
+                x={labelColumnWidth}
+                y={0}
+                rx={10}
+                ry={10}
+                width={barWidth}
+                height={20}
+              />
+              <text className="chart-value" x={labelColumnWidth + barAreaWidth + 12} y={15}>
+                {formatNumber(item.value)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function PublicationTrendChart({ data }: { data: ChartDatum[] }) {
+  if (!data.length) {
+    return <p className="chart-empty">暂无年度文献趋势数据。</p>;
+  }
+
+  const chartWidth = 520;
+  const chartHeight = 260;
+  const paddingLeft = 40;
+  const paddingRight = 20;
+  const paddingTop = 24;
+  const paddingBottom = 40;
+  const plotWidth = chartWidth - paddingLeft - paddingRight;
+  const plotHeight = chartHeight - paddingTop - paddingBottom;
+  const maxValue = Math.max(...data.map((item) => item.value), 1);
+  const horizontalGridCount = 4;
+  const peakPoint = data.reduce((currentPeak, item) =>
+    item.value > currentPeak.value ? item : currentPeak,
+  );
+  const points = data.map((item, index) => {
+    const x =
+      paddingLeft +
+      (data.length === 1 ? plotWidth / 2 : (index / (data.length - 1)) * plotWidth);
+    // Anchor the trend line to a zero-based baseline so year-over-year volume
+    // changes remain visually comparable even when the series is short.
+    const y = paddingTop + plotHeight - (item.value / maxValue) * plotHeight;
+    return {
+      ...item,
+      x,
+      y,
+    };
+  });
+  const trendPath = buildPolylinePath(points);
+  const areaPath = buildAreaPath(points, paddingTop + plotHeight);
+
+  return (
+    <div className="chart-shell">
+      <div className="chart-meta">
+        <span>
+          覆盖年份 {data[0].label} - {data[data.length - 1].label}
+        </span>
+        <span>
+          峰值 {peakPoint.label} ({formatNumber(peakPoint.value)})
+        </span>
+      </div>
+      <svg
+        className="chart-svg"
+        viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+        role="img"
+        aria-label="年度文献趋势图"
+      >
+        {Array.from({ length: horizontalGridCount + 1 }, (_, index) => {
+          const value = (maxValue / horizontalGridCount) * (horizontalGridCount - index);
+          const y = paddingTop + (plotHeight / horizontalGridCount) * index;
+          return (
+            <g key={value}>
+              <line
+                className="chart-grid-line"
+                x1={paddingLeft}
+                y1={y}
+                x2={chartWidth - paddingRight}
+                y2={y}
+              />
+              <text className="chart-axis-value" x={0} y={y + 4}>
+                {Math.round(value)}
+              </text>
+            </g>
+          );
+        })}
+        <path className="chart-area-path" d={areaPath} />
+        <path className="chart-line-path" d={trendPath} />
+        {points.map((point) => (
+          <g key={point.label}>
+            <circle className="chart-point" cx={point.x} cy={point.y} r={5} />
+            <text className="chart-point-value" x={point.x} y={point.y - 10} textAnchor="middle">
+              {formatNumber(point.value)}
+            </text>
+            <text
+              className="chart-axis-label"
+              x={point.x}
+              y={chartHeight - 12}
+              textAnchor="middle"
+            >
+              {point.label}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 function downloadMarkdownReport(report: ReportResponse): void {
   const blob = new Blob([report.markdown_content], { type: "text/markdown;charset=utf-8" });
   const objectUrl = URL.createObjectURL(blob);
@@ -451,6 +705,12 @@ export function HomePage() {
   const rawRecordSampleSummary = rawRecordSampleGroups
     .map((group) => `${group.sourceName} ${group.items.length}/${group.totalCount}`)
     .join(" / ");
+  const phaseChartData = analysisResult
+    ? buildPhaseChartData(analysisResult.global_stats.trial_phase_distribution)
+    : [];
+  const publicationTrendData = analysisResult
+    ? buildPublicationTrendData(analysisResult.global_stats.publication_count_by_year)
+    : [];
 
   useEffect(() => {
     let isMounted = true;
@@ -964,6 +1224,22 @@ export function HomePage() {
                           ))}
                         </ul>
                       )}
+                    </article>
+                  </div>
+
+                  <div className="result-grid">
+                    <article className="result-card analysis-card chart-card">
+                      <h3>管线阶段分布图</h3>
+                      <p className="card-caption">基于阶段 2 全局统计中的试验 phase 分布绘制。</p>
+                      <PhaseDistributionChart data={phaseChartData} />
+                    </article>
+
+                    <article className="result-card analysis-card chart-card">
+                      <h3>年度文献趋势图</h3>
+                      <p className="card-caption">
+                        基于阶段 2 全局统计中的年度文献数绘制近年趋势。
+                      </p>
+                      <PublicationTrendChart data={publicationTrendData} />
                     </article>
                   </div>
 
