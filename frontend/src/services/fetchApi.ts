@@ -2,6 +2,7 @@ import type {
   AnalysisBundleResponse,
   FetchCreateRequest,
   FetchRunResponse,
+  RawRecord,
   RawRecordListResponse,
   ReportResponse,
 } from "../types/fetch";
@@ -29,8 +30,27 @@ export async function createFetchRun(
 
 export async function listRawRecords(
   fetchRunId: string,
+  options: {
+    sourceName?: RawRecord["source_name"];
+    limit?: number;
+    offset?: number;
+  } = {},
 ): Promise<RawRecordListResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/fetches/${fetchRunId}/records`);
+  const query = new URLSearchParams();
+  if (options.sourceName) {
+    query.set("source_name", options.sourceName);
+  }
+  if (typeof options.limit === "number") {
+    query.set("limit", String(options.limit));
+  }
+  if (typeof options.offset === "number") {
+    query.set("offset", String(options.offset));
+  }
+
+  const queryString = query.toString();
+  const response = await fetch(
+    `${API_BASE_URL}/api/fetches/${fetchRunId}/records${queryString ? `?${queryString}` : ""}`,
+  );
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`原始记录查询失败：${response.status} ${errorText}`);

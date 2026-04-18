@@ -27,6 +27,14 @@ type SubmitState = "idle" | "submitting" | "success" | "error";
 type AnalysisState = "idle" | "loading" | "success" | "error";
 type ReportState = "idle" | "loading" | "success" | "error";
 type ReportAction = "build" | "download" | null;
+type RawRecordSampleGroup = {
+  sourceName: RawRecord["source_name"];
+  totalCount: number;
+  items: RawRecord[];
+};
+
+const MAX_RAW_RECORD_SAMPLES_PER_SOURCE = 5;
+const MAX_RAW_RECORD_FETCH_PER_SOURCE = 200;
 
 function formatDate(date: Date): string {
   const year = date.getFullYear();
@@ -213,6 +221,83 @@ function mergeClinicalTrialsTargetIntoSourceConfigs(
   };
 }
 
+function sampleItemsEvenly<T>(items: T[], sampleSize: number): T[] {
+  if (items.length <= sampleSize) {
+    return items;
+  }
+  if (sampleSize <= 1) {
+    return items.slice(0, 1);
+  }
+
+  // Keep the sample deterministic and spread across the whole result set so
+  // the preview covers early, middle, and late records from each source.
+  const selectedIndices = new Set<number>();
+  const stride = (items.length - 1) / (sampleSize - 1);
+
+  for (let index = 0; index < sampleSize; index += 1) {
+    selectedIndices.add(Math.round(index * stride));
+  }
+
+  for (let index = 0; selectedIndices.size < sampleSize && index < items.length; index += 1) {
+    selectedIndices.add(index);
+  }
+
+  return Array.from(selectedIndices)
+    .sort((left, right) => left - right)
+    .slice(0, sampleSize)
+    .map((index) => items[index]);
+}
+
+function buildRawRecordSampleGroups(
+  records: RawRecord[],
+  sourceResults: SourceFetchSummary[],
+  maxPerSource: number,
+): RawRecordSampleGroup[] {
+  const sourceGroups = new Map<RawRecord["source_name"], RawRecord[]>();
+  const sourceTotals = new Map<RawRecord["source_name"], number>();
+
+  for (const source of sourceResults) {
+    if (source.fetched_count <= 0) {
+      continue;
+    }
+    sourceGroups.set(source.source_name, []);
+    sourceTotals.set(source.source_name, source.fetched_count);
+  }
+
+  for (const record of records) {
+    const group = sourceGroups.get(record.source_name) ?? [];
+    group.push(record);
+    sourceGroups.set(record.source_name, group);
+  }
+
+  return Array.from(sourceGroups.entries()).map(([sourceName, items]) => ({
+    sourceName,
+    totalCount: sourceTotals.get(sourceName) ?? items.length,
+    items: sampleItemsEvenly(items, maxPerSource),
+  }));
+}
+
+async function loadRawRecordSamples(
+  fetchRunId: string,
+  sourceResults: SourceFetchSummary[],
+): Promise<RawRecord[]> {
+  const sourceRequests = sourceResults
+    .filter((source) => source.fetched_count > 0)
+    .map((source) =>
+      listRawRecords(fetchRunId, {
+        sourceName: source.source_name,
+        // Request source-specific records so one source cannot crowd out the other
+        // when the API default pagination limit is smaller than the total fetch size.
+        limit: Math.min(source.fetched_count, MAX_RAW_RECORD_FETCH_PER_SOURCE),
+      }),
+    );
+
+  const settledResponses = await Promise.allSettled(sourceRequests);
+  return settledResponses.flatMap((result) =>
+    result.status === "fulfilled" ? result.value.items : [],
+  );
+}
+
 function isClinicalTrialsPageSnapshot(value: unknown): value is ClinicalTrialsPageSnapshot {
   return (
     isObjectRecord(value) &&
@@ -337,6 +422,7 @@ export function HomePage() {
   const [indication, setIndication] = useState("breast cancer");
   const [aliases, setAliases] = useState("ERBB2");
   const [sourceConfigText, setSourceConfigText] = useState(defaultSourceConfigs);
+  const [isRawRecordSamplesExpanded, setIsRawRecordSamplesExpanded] = useState(false);
   const [fetchResult, setFetchResult] = useState<FetchRunResponse | null>(null);
   const [rawRecords, setRawRecords] = useState<RawRecord[]>([]);
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
@@ -351,6 +437,20 @@ export function HomePage() {
   const warningSummaries = analysisResult
     ? summarizeWarnings(analysisResult.warnings)
     : [];
+  const rawRecordSampleGroups = fetchResult
+    ? buildRawRecordSampleGroups(
+        rawRecords,
+        fetchResult.source_results,
+        MAX_RAW_RECORD_SAMPLES_PER_SOURCE,
+      )
+    : [];
+  const rawRecordSampleCount = rawRecordSampleGroups.reduce(
+    (total, group) => total + group.items.length,
+    0,
+  );
+  const rawRecordSampleSummary = rawRecordSampleGroups
+    .map((group) => `${group.sourceName} ${group.items.length}/${group.totalCount}`)
+    .join(" / ");
 
   useEffect(() => {
     let isMounted = true;
@@ -395,6 +495,7 @@ export function HomePage() {
     setReportError("");
     setReportResult(null);
     setReportAction(null);
+    setIsRawRecordSamplesExpanded(false);
 
     try {
       const aliasList = aliases
@@ -414,9 +515,12 @@ export function HomePage() {
         source_configs: sourceConfigs,
       };
       const created = await createFetchRun(payload);
-      const recordsResponse = await listRawRecords(created.fetch_run_id);
+      const sampledRecords = await loadRawRecordSamples(
+        created.fetch_run_id,
+        created.source_results,
+      );
       setFetchResult(created);
-      setRawRecords(recordsResponse.items);
+      setRawRecords(sampledRecords);
       setSubmitState("success");
     } catch (error) {
       const message =
@@ -657,22 +761,60 @@ export function HomePage() {
             </div>
 
             <article className="result-card">
-              <h3>原始记录样本</h3>
-              <ul className="record-list">
-                {rawRecords.map((record) => (
-                  <li key={record.record_id}>
-                    <div className="record-head">
-                      <strong>{record.source_name}</strong>
-                      <span>{record.source_id}</span>
-                    </div>
-                    {record.source_url && (
-                      <a href={record.source_url} target="_blank" rel="noreferrer">
-                        {record.source_url}
-                      </a>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <div className="card-head">
+                <div>
+                  <h3>原始记录样本</h3>
+                  <p className="card-caption">
+                    按来源抽样展示，每个来源最多 {MAX_RAW_RECORD_SAMPLES_PER_SOURCE} 条。
+                  </p>
+                </div>
+                {rawRecordSampleCount > 0 && (
+                  <button
+                    type="button"
+                    className="action-button action-button-secondary action-button-compact"
+                    onClick={() =>
+                      setIsRawRecordSamplesExpanded((currentValue) => !currentValue)
+                    }
+                  >
+                    {isRawRecordSamplesExpanded
+                      ? "收起样本"
+                      : `展开样本（${rawRecordSampleCount} 条）`}
+                  </button>
+                )}
+              </div>
+              {rawRecordSampleCount === 0 ? (
+                <p className="record-summary">暂无原始记录样本。</p>
+              ) : isRawRecordSamplesExpanded ? (
+                <ul className="record-group-list">
+                  {rawRecordSampleGroups.map((group) => (
+                    <li key={group.sourceName}>
+                      <div className="record-group-head">
+                        <strong>{group.sourceName}</strong>
+                        <span>
+                          展示 {group.items.length} / {group.totalCount} 条
+                        </span>
+                      </div>
+                      <ul className="record-list">
+                        {group.items.map((record) => (
+                          <li key={record.record_id}>
+                            <div className="record-head">
+                              <strong>{record.source_name}</strong>
+                              <span>{record.source_id}</span>
+                            </div>
+                            {record.source_url && (
+                              <a href={record.source_url} target="_blank" rel="noreferrer">
+                                {record.source_url}
+                              </a>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="record-summary">当前样本：{rawRecordSampleSummary}</p>
+              )}
             </article>
 
             {/* Keep stages separate so each workflow surfaces its own actions and status. */}
