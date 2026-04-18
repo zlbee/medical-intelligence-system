@@ -1120,9 +1120,9 @@ export function HomePage() {
 
             {/* Keep stages separate so each workflow surfaces its own actions and status. */}
             <article className="panel">
-              <h2>阶段 2 分析</h2>
+              <h2>阶段 2 智能分析</h2>
               <p className="panel-intro">
-                在阶段 1 的原始记录基础上执行标准化、统计与章节输入构建。
+                在阶段 1 的原始记录基础上执行数据标准化、评分排序、智能增强、事实统计。
               </p>
               <div className="action-row">
                 <button
@@ -1134,8 +1134,8 @@ export function HomePage() {
                   {analysisState === "loading"
                     ? "正在构建分析快照..."
                     : analysisResult
-                      ? "重新构建阶段 2 分析"
-                      : "执行阶段 2 分析"}
+                      ? "重新构建阶段 2 智能分析"
+                      : "执行阶段 2 智能分析"}
                 </button>
                 <button
                   type="button"
@@ -1454,9 +1454,9 @@ export function HomePage() {
             </article>
 
             <article className="panel">
-              <h2>阶段 3 报告</h2>
+              <h2>阶段 3 智能报告</h2>
               <p className="panel-intro">
-                基于阶段 2 分析快照生成 Markdown 报告，并支持直接下载已保存结果。
+                基于阶段 2 分析快照生成 Markdown 智能报告，并支持直接下载已保存结果。
               </p>
               <div className="action-row">
                 <button
@@ -1466,10 +1466,10 @@ export function HomePage() {
                   disabled={reportState === "loading"}
                 >
                   {reportState === "loading" && reportAction === "build"
-                    ? "正在生成阶段 3 报告..."
+                    ? "正在生成阶段 3 智能报告..."
                     : reportResult
-                      ? "重新生成报告"
-                      : "生成报告"}
+                      ? "重新生成智能报告"
+                      : "生成智能报告"}
                 </button>
                 <button
                   type="button"
