@@ -32,6 +32,11 @@ type RawRecordSampleGroup = {
   totalCount: number;
   items: RawRecord[];
 };
+type TruncationNoteItem = {
+  key: string;
+  sectionLabel: string;
+  note: string;
+};
 type ChartDatum = {
   label: string;
   value: number;
@@ -204,6 +209,37 @@ function buildPublicationTrendData(distribution: Record<string, number>): ChartD
       label: year,
       value: count,
     }));
+}
+
+function buildTruncationNoteItems(
+  analysisResult: AnalysisBundleResponse | null,
+): TruncationNoteItem[] {
+  if (!analysisResult) {
+    return [];
+  }
+
+  return [
+    ...analysisResult.section_inputs.target_overview.truncation_notes.map((note) => ({
+      key: `target-${note}`,
+      sectionLabel: "靶点概述",
+      note,
+    })),
+    ...analysisResult.section_inputs.pipeline_overview.truncation_notes.map((note) => ({
+      key: `pipeline-${note}`,
+      sectionLabel: "在研管线",
+      note,
+    })),
+    ...analysisResult.section_inputs.research_update.truncation_notes.map((note) => ({
+      key: `research-${note}`,
+      sectionLabel: "研究动态",
+      note,
+    })),
+    ...analysisResult.section_inputs.competition_assessment.truncation_notes.map((note) => ({
+      key: `competition-${note}`,
+      sectionLabel: "竞争格局",
+      note,
+    })),
+  ];
 }
 
 type WarningSummary = {
@@ -677,6 +713,7 @@ export function HomePage() {
   const [aliases, setAliases] = useState("ERBB2");
   const [sourceConfigText, setSourceConfigText] = useState(defaultSourceConfigs);
   const [isRawRecordSamplesExpanded, setIsRawRecordSamplesExpanded] = useState(false);
+  const [isTruncationNotesExpanded, setIsTruncationNotesExpanded] = useState(false);
   const [fetchResult, setFetchResult] = useState<FetchRunResponse | null>(null);
   const [rawRecords, setRawRecords] = useState<RawRecord[]>([]);
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
@@ -711,6 +748,7 @@ export function HomePage() {
   const publicationTrendData = analysisResult
     ? buildPublicationTrendData(analysisResult.global_stats.publication_count_by_year)
     : [];
+  const truncationNoteItems = buildTruncationNoteItems(analysisResult);
 
   useEffect(() => {
     let isMounted = true;
@@ -756,6 +794,7 @@ export function HomePage() {
     setReportResult(null);
     setReportAction(null);
     setIsRawRecordSamplesExpanded(false);
+    setIsTruncationNotesExpanded(false);
 
     try {
       const aliasList = aliases
@@ -800,6 +839,7 @@ export function HomePage() {
     setReportError("");
     setReportResult(null);
     setReportAction(null);
+    setIsTruncationNotesExpanded(false);
 
     try {
       const built = await buildAnalysisBundle(fetchResult.fetch_run_id);
@@ -823,6 +863,7 @@ export function HomePage() {
     setReportError("");
     setReportResult(null);
     setReportAction(null);
+    setIsTruncationNotesExpanded(false);
 
     try {
       const loaded = await getAnalysisBundle(fetchResult.fetch_run_id);
@@ -1371,38 +1412,41 @@ export function HomePage() {
                     </article>
                   </div>
 
-                  {(analysisResult.section_inputs.target_overview.truncation_notes.length > 0 ||
-                    analysisResult.section_inputs.pipeline_overview.truncation_notes.length > 0 ||
-                    analysisResult.section_inputs.research_update.truncation_notes.length > 0 ||
-                    analysisResult.section_inputs.competition_assessment.truncation_notes.length > 0) && (
+                  {truncationNoteItems.length > 0 && (
                     <article className="result-card analysis-card">
-                      <h3>裁剪说明</h3>
-                      <ul className="compact-list">
-                        {analysisResult.section_inputs.target_overview.truncation_notes.map((note) => (
-                          <li key={`target-${note}`}>
-                            <strong>靶点概述</strong>
-                            <span>{note}</span>
-                          </li>
-                        ))}
-                        {analysisResult.section_inputs.pipeline_overview.truncation_notes.map((note) => (
-                          <li key={`pipeline-${note}`}>
-                            <strong>在研管线</strong>
-                            <span>{note}</span>
-                          </li>
-                        ))}
-                        {analysisResult.section_inputs.research_update.truncation_notes.map((note) => (
-                          <li key={`research-${note}`}>
-                            <strong>研究动态</strong>
-                            <span>{note}</span>
-                          </li>
-                        ))}
-                        {analysisResult.section_inputs.competition_assessment.truncation_notes.map((note) => (
-                          <li key={`competition-${note}`}>
-                            <strong>竞争格局</strong>
-                            <span>{note}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      <div className="card-head">
+                        <div>
+                          <h3>裁剪说明</h3>
+                          <p className="card-caption">
+                            按章节汇总阶段 2 输入构建时触发的裁剪与截断提示。
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="action-button action-button-secondary action-button-compact"
+                          onClick={() =>
+                            setIsTruncationNotesExpanded((currentValue) => !currentValue)
+                          }
+                        >
+                          {isTruncationNotesExpanded
+                            ? "收起裁剪说明"
+                            : `展开裁剪说明（${truncationNoteItems.length} 条）`}
+                        </button>
+                      </div>
+                      {isTruncationNotesExpanded ? (
+                        <ul className="compact-list">
+                          {truncationNoteItems.map((item) => (
+                            <li key={item.key}>
+                              <strong>{item.sectionLabel}</strong>
+                              <span>{item.note}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="record-summary">
+                          当前共有 {truncationNoteItems.length} 条裁剪说明，点击按钮后展开查看。
+                        </p>
+                      )}
                     </article>
                   )}
                 </div>
