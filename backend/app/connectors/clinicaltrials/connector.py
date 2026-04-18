@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 from app.connectors.base import BaseConnector
@@ -11,21 +12,37 @@ from app.domain import ConnectorResult, RawRecord, SourceName, TargetQuery
 class ClinicalTrialsGovConnector(BaseConnector):
     source_name = SourceName.CLINICALTRIALS
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        sleep_fn: Callable[[float], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.client = ClinicalTrialsGovClient(self.settings)
+        self.sleep_fn = sleep_fn or time.sleep
 
     def search(self, query: TargetQuery, *, fetch_run_id: str) -> ConnectorResult:
         config = query.source_configs.clinicaltrials
         params = self._build_search_params(query)
+        record_cap = self.settings.fetch_clinicaltrials_max_records
+        query_interval_seconds = self.settings.fetch_query_interval_seconds
         raw_records: list[RawRecord] = []
         page_snapshots: list[dict[str, Any]] = []
         next_page_token: str | None = None
         total_count: int | None = None
+        stop_reason = "empty_page"
+        page_index = 0
 
         started = time.perf_counter()
         with self.client_context() as http_client:
-            for page_index in range(config.max_pages):
+            # `page_size` controls the per-request batch size. The env-level cap
+            # controls when we stop paginating, and we intentionally allow the
+            # last page to overshoot that cap instead of truncating results.
+            while True:
+                if page_index > 0 and query_interval_seconds > 0:
+                    self.sleep_fn(query_interval_seconds)
+
                 page_params = dict(params)
                 if next_page_token:
                     page_params["pageToken"] = next_page_token
@@ -41,8 +58,13 @@ class ClinicalTrialsGovConnector(BaseConnector):
                     "page_index": page_index,
                     "params": page_params,
                     "returned_count": len(studies),
+                    "next_page_token": next_page_token,
                 }
                 page_snapshots.append(request_snapshot)
+
+                if not studies:
+                    stop_reason = "empty_page"
+                    break
 
                 for study_index, study in enumerate(studies):
                     source_id = self._extract_source_id(study, study_index, page_index)
@@ -59,8 +81,13 @@ class ClinicalTrialsGovConnector(BaseConnector):
                         )
                     )
 
-                if not next_page_token:
+                if len(raw_records) >= record_cap:
+                    stop_reason = "record_cap_reached"
                     break
+                if not next_page_token:
+                    stop_reason = "no_next_page_token"
+                    break
+                page_index += 1
 
         elapsed_ms = (time.perf_counter() - started) * 1000
         return ConnectorResult(
@@ -71,6 +98,8 @@ class ClinicalTrialsGovConnector(BaseConnector):
             request_snapshot={
                 "params": params,
                 "pages": page_snapshots,
+                "applied_record_cap": record_cap,
+                "stop_reason": stop_reason,
                 "next_page_token": next_page_token,
             },
         )

@@ -271,6 +271,37 @@ h2 {
   line-height: 1.6;
 }
 
+.source-result-meta {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.source-result-meta strong {
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #5e7a88;
+}
+
+.source-result-meta span {
+  color: #173746;
+}
+
+.source-result-summary {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: #355869;
+}
+
+.source-result-summary li {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .record-head {
   display: flex;
   justify-content: space-between;

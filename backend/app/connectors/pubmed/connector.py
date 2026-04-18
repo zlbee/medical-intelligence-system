@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from typing import Any
 
 from app.connectors.base import BaseConnector
@@ -12,53 +13,115 @@ from app.domain import ConnectorResult, RawRecord, SourceName, TargetQuery
 class PubMedConnector(BaseConnector):
     source_name = SourceName.PUBMED
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        sleep_fn: Callable[[float], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.client = PubMedClient(self.settings)
+        self.sleep_fn = sleep_fn or time.sleep
 
     def search(self, query: TargetQuery, *, fetch_run_id: str) -> ConnectorResult:
         config = query.source_configs.pubmed
         term = self._build_term(query)
-        esearch_params = self._build_esearch_params(query, term)
+        base_esearch_params = self._build_esearch_params(query, term)
+        record_cap = self.settings.fetch_pubmed_max_records
+        query_interval_seconds = self.settings.fetch_query_interval_seconds
         raw_records: list[RawRecord] = []
+        round_snapshots: list[dict[str, Any]] = []
+        total_count: int | None = None
+        current_retstart = config.retstart
+        round_index = 0
+        stop_reason = "no_more_ids"
 
         started = time.perf_counter()
         with self.client_context() as http_client:
-            esearch_response = self.client.esearch(http_client, esearch_params)
-            esearch_payload = esearch_response.json()
-            search_result = esearch_payload.get("esearchresult", {})
-            id_list = list(search_result.get("idlist", []))
-            total_count = self._safe_int(search_result.get("count"))
+            # `retmax` controls the number of ids per esearch round, while the
+            # env-level cap decides when we stop launching additional rounds.
+            while True:
+                if round_index > 0 and query_interval_seconds > 0:
+                    self.sleep_fn(query_interval_seconds)
 
-            for batch_index, batch_ids in enumerate(
-                self._chunked(id_list, config.batch_size)
-            ):
-                efetch_params = self._build_efetch_params(batch_ids)
-                efetch_response = self.client.efetch(http_client, efetch_params)
-                articles = self._extract_articles(efetch_response.text)
+                esearch_params = dict(base_esearch_params)
+                esearch_params["retstart"] = str(current_retstart)
+                esearch_response = self.client.esearch(http_client, esearch_params)
+                esearch_payload = esearch_response.json()
+                search_result = esearch_payload.get("esearchresult", {})
+                id_list = list(search_result.get("idlist", []))
+                if total_count is None:
+                    total_count = self._safe_int(search_result.get("count"))
 
-                request_snapshot = {
-                    "batch_index": batch_index,
-                    "term": term,
-                    "esearch_params": esearch_params,
-                    "efetch_params": efetch_params,
-                    "batch_ids": batch_ids,
+                round_snapshot = {
+                    "round_index": round_index,
+                    "retstart": current_retstart,
+                    "retmax": config.retmax,
+                    "returned_ids": len(id_list),
+                    "efetch_batches": [],
                 }
-                for article_index, article in enumerate(articles):
-                    source_id = self._extract_pmid(article, article_index, batch_index)
-                    article_xml = ET.tostring(article, encoding="unicode")
-                    raw_records.append(
-                        RawRecord(
-                            fetch_run_id=fetch_run_id,
-                            source_name=self.source_name,
-                            source_id=source_id,
-                            source_url=f"https://pubmed.ncbi.nlm.nih.gov/{source_id}/",
-                            target=query.target,
-                            indication=query.indication,
-                            payload={"xml": article_xml},
-                            query_snapshot=request_snapshot,
+                round_snapshots.append(round_snapshot)
+
+                if not id_list:
+                    if total_count is not None and current_retstart >= total_count:
+                        stop_reason = "retstart_exhausted_total_count"
+                    else:
+                        stop_reason = "no_more_ids"
+                    break
+
+                for batch_index, batch_ids in enumerate(
+                    self._chunked(id_list, config.batch_size)
+                ):
+                    efetch_params = self._build_efetch_params(batch_ids)
+                    efetch_response = self.client.efetch(http_client, efetch_params)
+                    articles = self._extract_articles(efetch_response.text)
+
+                    batch_snapshot = {
+                        "batch_index": batch_index,
+                        "batch_ids": batch_ids,
+                        "efetch_params": efetch_params,
+                        "returned_count": len(articles),
+                    }
+                    round_snapshot["efetch_batches"].append(batch_snapshot)
+
+                    request_snapshot = {
+                        "round_index": round_index,
+                        "batch_index": batch_index,
+                        "term": term,
+                        "esearch_params": esearch_params,
+                        "efetch_params": efetch_params,
+                        "batch_ids": batch_ids,
+                    }
+                    for article_index, article in enumerate(articles):
+                        source_id = self._extract_pmid(
+                            article,
+                            article_index,
+                            round_index,
+                            batch_index,
                         )
-                    )
+                        article_xml = ET.tostring(article, encoding="unicode")
+                        raw_records.append(
+                            RawRecord(
+                                fetch_run_id=fetch_run_id,
+                                source_name=self.source_name,
+                                source_id=source_id,
+                                source_url=f"https://pubmed.ncbi.nlm.nih.gov/{source_id}/",
+                                target=query.target,
+                                indication=query.indication,
+                                payload={"xml": article_xml},
+                                query_snapshot=request_snapshot,
+                            )
+                        )
+
+                if len(raw_records) >= record_cap:
+                    stop_reason = "record_cap_reached"
+                    break
+                if total_count is not None and current_retstart + config.retmax >= total_count:
+                    stop_reason = "retstart_exhausted_total_count"
+                    break
+
+                current_retstart += config.retmax
+                round_index += 1
 
         elapsed_ms = (time.perf_counter() - started) * 1000
         return ConnectorResult(
@@ -68,8 +131,9 @@ class PubMedConnector(BaseConnector):
             elapsed_ms=elapsed_ms,
             request_snapshot={
                 "term": term,
-                "esearch_params": esearch_params,
-                "efetch_batch_size": config.batch_size,
+                "rounds": round_snapshots,
+                "applied_record_cap": record_cap,
+                "stop_reason": stop_reason,
             },
         )
 
@@ -156,13 +220,19 @@ class PubMedConnector(BaseConnector):
         book_articles = list(root.findall("PubmedBookArticle"))
         return articles + book_articles
 
-    def _extract_pmid(self, article: ET.Element, article_index: int, batch_index: int) -> str:
+    def _extract_pmid(
+        self,
+        article: ET.Element,
+        article_index: int,
+        round_index: int,
+        batch_index: int,
+    ) -> str:
         pmid_node = article.find("./MedlineCitation/PMID")
         if pmid_node is None:
             pmid_node = article.find(".//PMID")
         if pmid_node is not None and pmid_node.text:
             return pmid_node.text.strip()
-        return f"pubmed-{batch_index}-{article_index}"
+        return f"pubmed-{round_index}-{batch_index}-{article_index}"
 
     def _serialize_value(self, value: Any) -> str:
         if isinstance(value, bool):

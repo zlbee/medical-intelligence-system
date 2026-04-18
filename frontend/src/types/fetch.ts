@@ -1,3 +1,23 @@
+export interface ClinicalTrialsPageSnapshot {
+  page_index: number;
+  returned_count: number;
+  next_page_token?: string | null;
+}
+
+export interface PubMedEfetchBatchSnapshot {
+  batch_index: number;
+  batch_ids: string[];
+  returned_count: number;
+}
+
+export interface PubMedRoundSnapshot {
+  round_index: number;
+  retstart: number;
+  retmax: number;
+  returned_ids: number;
+  efetch_batches: PubMedEfetchBatchSnapshot[];
+}
+
 export interface SourceFetchSummary {
   source_name: "clinicaltrials" | "pubmed";
   success: boolean;

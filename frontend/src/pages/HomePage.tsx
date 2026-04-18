@@ -12,9 +12,12 @@ import { fetchHealth } from "../services/healthApi";
 import type {
   AnalysisBundleResponse,
   FetchRunResponse,
+  ClinicalTrialsPageSnapshot,
   NamedCount,
+  PubMedRoundSnapshot,
   RawRecord,
   ReportResponse,
+  SourceFetchSummary,
   WarningItem,
 } from "../types/fetch";
 import type { HealthResponse } from "../types/health";
@@ -45,7 +48,6 @@ const defaultSourceConfigs = JSON.stringify(
     clinicaltrials: {
       enabled: true,
       page_size: 5,
-      max_pages: 1,
       count_total: true,
       query: {
         term: `(AREA[Phase]\"Phase 2\" OR AREA[Phase]\"Phase 3\") AND AREA[LastUpdatePostDate]RANGE[${formatClinicalTrialsDate(oneYearAgo)}, MAX]`,
@@ -141,6 +143,112 @@ function summarizeWarnings(warnings: WarningItem[]): WarningSummary[] {
   }
 
   return Array.from(summaryMap.values());
+}
+
+type SnapshotSummary = {
+  stopReason: string | null;
+  lines: string[];
+};
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isClinicalTrialsPageSnapshot(value: unknown): value is ClinicalTrialsPageSnapshot {
+  return (
+    isObjectRecord(value) &&
+    typeof value.page_index === "number" &&
+    typeof value.returned_count === "number"
+  );
+}
+
+function isPubMedRoundSnapshot(value: unknown): value is PubMedRoundSnapshot {
+  return (
+    isObjectRecord(value) &&
+    typeof value.round_index === "number" &&
+    typeof value.retstart === "number" &&
+    typeof value.retmax === "number" &&
+    typeof value.returned_ids === "number" &&
+    Array.isArray(value.efetch_batches)
+  );
+}
+
+function formatStopReason(reason: string | null): string {
+  if (!reason) {
+    return "未知";
+  }
+
+  const labels: Record<string, string> = {
+    record_cap_reached: "达到环境变量记录上限",
+    no_next_page_token: "来源不再返回下一页",
+    empty_page: "下一页为空",
+    no_more_ids: "来源未返回更多 PMID",
+    retstart_exhausted_total_count: "已达到来源可返回总量",
+  };
+  const label = labels[reason];
+  return label ? `${reason}（${label}）` : reason;
+}
+
+// The fetch API returns source-specific request snapshots. We normalize the few
+// fields we care about here so the UI can show pagination progress without
+// coupling the whole page to backend payload details.
+function summarizeSourceRequestSnapshot(source: SourceFetchSummary): SnapshotSummary {
+  const snapshot = isObjectRecord(source.request_snapshot) ? source.request_snapshot : {};
+  const stopReason =
+    typeof snapshot.stop_reason === "string" ? snapshot.stop_reason : null;
+  const appliedRecordCap =
+    typeof snapshot.applied_record_cap === "number" ? snapshot.applied_record_cap : null;
+  const lines: string[] = [];
+
+  if (appliedRecordCap !== null) {
+    lines.push(`记录上限：${appliedRecordCap}`);
+  }
+
+  if (source.source_name === "clinicaltrials") {
+    const pages = Array.isArray(snapshot.pages)
+      ? snapshot.pages.filter(isClinicalTrialsPageSnapshot)
+      : [];
+    if (pages.length) {
+      const pagePreview = pages
+        .slice(0, 3)
+        .map((page) => `第 ${page.page_index + 1} 页 ${page.returned_count} 条`)
+        .join(" / ");
+      lines.push(
+        `分页摘要：共 ${pages.length} 页${pagePreview ? `，${pagePreview}` : ""}${
+          pages.length > 3 ? ` / 其余 ${pages.length - 3} 页` : ""
+        }`,
+      );
+    }
+  }
+
+  if (source.source_name === "pubmed") {
+    const rounds = Array.isArray(snapshot.rounds)
+      ? snapshot.rounds.filter(isPubMedRoundSnapshot)
+      : [];
+    if (rounds.length) {
+      const totalBatches = rounds.reduce(
+        (sum, round) => sum + round.efetch_batches.length,
+        0,
+      );
+      const roundPreview = rounds
+        .slice(0, 3)
+        .map(
+          (round) =>
+            `第 ${round.round_index + 1} 轮 retstart=${round.retstart} / IDs ${round.returned_ids}`,
+        )
+        .join(" / ");
+      lines.push(
+        `轮次摘要：共 ${rounds.length} 轮 esearch，${totalBatches} 个 efetch 批次${
+          roundPreview ? `，${roundPreview}` : ""
+        }${rounds.length > 3 ? ` / 其余 ${rounds.length - 3} 轮` : ""}`,
+      );
+    }
+  }
+
+  return {
+    stopReason,
+    lines,
+  };
 }
 
 function buildReportFileName(report: ReportResponse): string {
@@ -404,7 +512,8 @@ export function HomePage() {
       <section className="panel playground-panel">
         <h2>阶段 1 采集调试面板</h2>
         <p className="panel-intro">
-          这里可以直接输入靶点，并使用 JSON 配置两个来源的查询筛选条件。
+          这里可以直接输入靶点，并使用 JSON 配置两个来源的查询筛选条件。`page_size`
+          / `retmax` / `batch_size` 表示单轮批大小，累计抓取上限由后端环境变量控制。
         </p>
         <form className="fetch-form" onSubmit={handleSubmit}>
           <label>
@@ -467,15 +576,32 @@ export function HomePage() {
               <article className="result-card">
                 <h3>来源抓取结果</h3>
                 <ul className="result-list">
-                  {fetchResult.source_results.map((item) => (
-                    <li key={item.source_name}>
-                      <strong>{item.source_name}</strong>
-                      <span>
-                        {item.success ? "成功" : "失败"}，抓取 {item.fetched_count} 条
-                        {item.total_count !== null ? ` / 总量 ${item.total_count}` : ""}
-                      </span>
-                    </li>
-                  ))}
+                  {fetchResult.source_results.map((item) => {
+                    const snapshotSummary = summarizeSourceRequestSnapshot(item);
+
+                    return (
+                      <li key={item.source_name}>
+                        <strong>{item.source_name}</strong>
+                        <span>
+                          {item.success ? "成功" : "失败"}，抓取 {item.fetched_count} 条
+                          {item.total_count !== null ? ` / 总量 ${item.total_count}` : ""}
+                        </span>
+                        {snapshotSummary.stopReason && (
+                          <div className="source-result-meta">
+                            <strong>stop_reason</strong>
+                            <span>{formatStopReason(snapshotSummary.stopReason)}</span>
+                          </div>
+                        )}
+                        {snapshotSummary.lines.length > 0 && (
+                          <ul className="source-result-summary">
+                            {snapshotSummary.lines.map((line) => (
+                              <li key={`${item.source_name}-${line}`}>{line}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </article>
             </div>

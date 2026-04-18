@@ -21,6 +21,16 @@
 
 如需覆盖默认配置，可复制根目录 `.env.example` 为 `.env` 并按需修改；不复制也可直接使用默认值启动。
 其中 `MIS_CORS_ORIGINS` 需要使用 JSON 数组格式，例如 `["http://localhost:5173","http://127.0.0.1:5173"]`。
+阶段 1 的分页抓取还支持三项控制：
+
+- `MIS_FETCH_CLINICALTRIALS_MAX_RECORDS=100`
+  `ClinicalTrials` 单次 fetch 的来源级累计抓取上限
+- `MIS_FETCH_PUBMED_MAX_RECORDS=100`
+  `PubMed` 单次 fetch 的来源级累计抓取上限
+- `MIS_FETCH_QUERY_INTERVAL_SECONDS=0.5`
+  翻页或新一轮批次查询之间的间隔秒数，用于降低限流风险
+
+在该语义下，请求体里的 `page_size`、`retmax`、`batch_size` 只表示单轮批大小，不再表示总抓取上限。
 阶段 2 的 LLM 增强还支持两项控制：
 
 - `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=true`
@@ -72,6 +82,14 @@ POST /api/fetches
 请求体可使用 JSON 配置两个来源的筛选条件，示例文件见：
 
 - [示例采集请求-HER2.json](D:\Project\REFERENCE\medical-intelligence-system\docs\示例采集请求-HER2.json)
+
+补充说明：
+
+- `clinicaltrials.page_size` 表示单页大小，最终累计抓取上限由 `MIS_FETCH_CLINICALTRIALS_MAX_RECORDS` 控制
+- `clinicaltrials.max_pages` 目前仅保留兼容，不再作为总量上限
+- `pubmed.retmax` 表示单轮 `esearch` 抓取 ID 数量
+- `pubmed.batch_size` 表示单次 `efetch` 的 XML 批大小
+- `SourceFetchSummary.fetched_count` 表示本次实际落库数量，可能略高于环境变量上限，但最多只超过一轮批大小
 
 ### 查询采集任务详情
 

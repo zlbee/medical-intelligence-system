@@ -6,7 +6,6 @@
     "clinicaltrials": {
       "enabled": true,
       "page_size": 5,
-      "max_pages": 1,
       "count_total": true,
       "query": {
         "intr": "HER2"
