@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -63,7 +64,9 @@ class LLMClient:
             type=LLMResponseFormatType.JSON_SCHEMA,
             json_schema=LLMJsonSchema(
                 name=task_name,
-                schema_definition=response_model.model_json_schema(),
+                schema_definition=_normalize_strict_json_schema(
+                    response_model.model_json_schema()
+                ),
                 description=response_model.__doc__,
                 strict=True,
             ),
@@ -109,3 +112,44 @@ class LLMClient:
                     "validation_errors": exc.errors(),
                 },
             ) from exc
+
+
+def _normalize_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """
+    Make Pydantic JSON Schema acceptable to strict structured-output providers.
+
+    OpenAI-compatible strict schemas require fixed-shape objects to opt out of extra
+    fields with ``additionalProperties: false``. Pydantic does not emit that for plain
+    models by default, so we recursively add it before sending the schema upstream.
+    """
+
+    normalized = deepcopy(schema)
+    _normalize_json_schema_node(normalized)
+    return normalized
+
+
+def _normalize_json_schema_node(node: Any) -> None:
+    if isinstance(node, dict):
+        properties = node.get("properties")
+        additional_properties = node.get("additionalProperties")
+
+        # Only force closed-world semantics for fixed-shape objects. If a schema already
+        # uses ``additionalProperties`` to model a free-form map, we keep that contract.
+        if node.get("type") == "object" and isinstance(properties, dict):
+            node["additionalProperties"] = False
+            node["required"] = list(properties.keys())
+        elif (
+            node.get("type") == "object"
+            and not properties
+            and additional_properties is None
+        ):
+            node["additionalProperties"] = False
+            node["required"] = []
+
+        for value in node.values():
+            _normalize_json_schema_node(value)
+        return
+
+    if isinstance(node, list):
+        for item in node:
+            _normalize_json_schema_node(item)

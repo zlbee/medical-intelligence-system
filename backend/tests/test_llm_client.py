@@ -32,6 +32,16 @@ class TrialSignal(BaseModel):
     confidence: float
 
 
+class EvidencePoint(BaseModel):
+    field_name: str
+    excerpt: str
+
+
+class NestedSignal(BaseModel):
+    summary: str
+    evidence: list[EvidencePoint]
+
+
 def test_openrouter_provider_builds_expected_request_payload() -> None:
     captured_request: dict[str, object] = {}
 
@@ -184,6 +194,43 @@ def test_llm_client_generate_structured_validates_schema() -> None:
     )
 
     assert result == TrialSignal(label="late-stage", confidence=0.91)
+    assert provider.last_request is not None
+    schema = provider.last_request.options.response_format.json_schema.schema_definition
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["label", "confidence"]
+
+
+def test_llm_client_generate_structured_normalizes_nested_object_schema() -> None:
+    provider = StubProvider(
+        response=LLMResponse(
+            provider="openrouter",
+            provider_request_id="resp-3b",
+            model="openai/gpt-4o-mini",
+            finish_reason="stop",
+            message=LLMMessage(
+                role=LLMMessageRole.ASSISTANT,
+                content=(
+                    '{"summary":"useful signal","evidence":'
+                    '[{"field_name":"title","excerpt":"HER2 result"}]}'
+                ),
+            ),
+        )
+    )
+    client = LLMClient(provider)
+
+    result = client.generate_structured(
+        task_name="nested_signal",
+        messages=[LLMMessage(role=LLMMessageRole.USER, content="Return JSON only.")],
+        response_model=NestedSignal,
+    )
+
+    assert result.summary == "useful signal"
+    assert provider.last_request is not None
+    schema = provider.last_request.options.response_format.json_schema.schema_definition
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["summary", "evidence"]
+    assert schema["$defs"]["EvidencePoint"]["additionalProperties"] is False
+    assert schema["$defs"]["EvidencePoint"]["required"] == ["field_name", "excerpt"]
 
 
 def test_llm_client_generate_structured_rejects_invalid_json() -> None:

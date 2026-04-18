@@ -4,7 +4,10 @@ from datetime import date, datetime, timezone
 
 from app.domain import (
     AnalysisReadyBundle,
+    DimensionInsight,
+    EvidenceSnippet,
     GlobalAnalysisStats,
+    LLMEnrichmentSummary,
     NamedCount,
     NormalizedDate,
     NormalizedLiteratureRecord,
@@ -86,3 +89,26 @@ def test_normalized_literature_record_keeps_rich_metadata_slots() -> None:
 
     assert record.affiliations == ["Example University"]
     assert record.linked_nct_ids == ["NCT00000002"]
+
+
+def test_dimension_insight_limits_evidence_snippets_and_excerpt_length() -> None:
+    insight = DimensionInsight(
+        can_contribute=True,
+        relevance_score=120,
+        confidence=-5,
+        evidence_snippets=[
+            EvidenceSnippet(field_name="title", excerpt="A" * 400, reason="title match"),
+            EvidenceSnippet(field_name="summary", excerpt="B", reason="summary match"),
+            EvidenceSnippet(field_name="conditions", excerpt="C", reason="condition match"),
+        ],
+    )
+    bundle = AnalysisReadyBundle(
+        query=TargetQuery(target="HER2"),
+        llm_enrichment_summary=LLMEnrichmentSummary(trial_total=1),
+    )
+
+    assert insight.relevance_score == 100
+    assert insight.confidence == 0
+    assert len(insight.evidence_snippets) == 2
+    assert len(insight.evidence_snippets[0].excerpt) == 280
+    assert bundle.llm_enrichment_summary.trial_total == 1

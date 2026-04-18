@@ -12,6 +12,8 @@ from app.domain import (
     AnalysisReadyBundle,
     CompetitionAssessmentSectionInput,
     CoverageSnapshot,
+    LLMEnrichmentSummary,
+    LiteratureLLMEnrichment,
     NormalizedLiteratureRecord,
     NormalizedTrialRecord,
     PipelineOverviewSectionInput,
@@ -19,6 +21,7 @@ from app.domain import (
     SectionInputBundle,
     TargetOverviewSectionInput,
     TargetQuery,
+    TrialLLMEnrichment,
     WarningItem,
     WarningLevel,
     WarningScope,
@@ -35,16 +38,45 @@ class AnalysisBundleBuilder:
         query: TargetQuery,
         trials: list[NormalizedTrialRecord],
         literature: list[NormalizedLiteratureRecord],
+        trial_llm_enrichments: list[TrialLLMEnrichment] | None = None,
+        literature_llm_enrichments: list[LiteratureLLMEnrichment] | None = None,
+        llm_warnings: list[WarningItem] | None = None,
     ) -> AnalysisReadyBundle:
-        global_stats = build_global_analysis_stats(trials, literature)
+        trial_llm_enrichments = trial_llm_enrichments or []
+        literature_llm_enrichments = literature_llm_enrichments or []
+        llm_warnings = llm_warnings or []
 
-        target_selection = self.selector.select_target_overview(query, trials, literature)
-        pipeline_selection = self.selector.select_pipeline_overview(query, trials)
-        research_selection = self.selector.select_research_update(query, literature)
+        global_stats = build_global_analysis_stats(trials, literature)
+        trial_enrichment_map = {
+            enrichment.trial_key: enrichment for enrichment in trial_llm_enrichments
+        }
+        literature_enrichment_map = {
+            enrichment.literature_key: enrichment for enrichment in literature_llm_enrichments
+        }
+
+        target_selection = self.selector.select_target_overview(
+            query,
+            trials,
+            literature,
+            trial_enrichments_by_key=trial_enrichment_map,
+            literature_enrichments_by_key=literature_enrichment_map,
+        )
+        pipeline_selection = self.selector.select_pipeline_overview(
+            query,
+            trials,
+            trial_enrichments_by_key=trial_enrichment_map,
+        )
+        research_selection = self.selector.select_research_update(
+            query,
+            literature,
+            literature_enrichments_by_key=literature_enrichment_map,
+        )
         competition_selection = self.selector.select_competition_assessment(
             query,
             trials,
             literature,
+            trial_enrichments_by_key=trial_enrichment_map,
+            literature_enrichments_by_key=literature_enrichment_map,
         )
 
         section_inputs = SectionInputBundle(
@@ -64,14 +96,24 @@ class AnalysisBundleBuilder:
         )
         coverage = self._build_coverage(section_inputs, trials, literature)
         warnings = self._build_warnings(section_inputs, coverage)
+        warnings.extend(llm_warnings)
 
         return AnalysisReadyBundle(
             query=query,
             trials=trials,
             literature=literature,
+            trial_llm_enrichments=trial_llm_enrichments,
+            literature_llm_enrichments=literature_llm_enrichments,
             global_stats=global_stats,
             coverage=coverage,
             section_inputs=section_inputs,
+            llm_enrichment_summary=self._build_llm_enrichment_summary(
+                trials=trials,
+                literature=literature,
+                trial_llm_enrichments=trial_llm_enrichments,
+                literature_llm_enrichments=literature_llm_enrichments,
+                llm_warnings=llm_warnings,
+            ),
             warnings=warnings,
         )
 
@@ -229,3 +271,33 @@ class AnalysisBundleBuilder:
                 )
             )
         return warnings
+
+    def _build_llm_enrichment_summary(
+        self,
+        *,
+        trials: list[NormalizedTrialRecord],
+        literature: list[NormalizedLiteratureRecord],
+        trial_llm_enrichments: list[TrialLLMEnrichment],
+        literature_llm_enrichments: list[LiteratureLLMEnrichment],
+        llm_warnings: list[WarningItem],
+    ) -> LLMEnrichmentSummary:
+        prompt_versions = sorted(
+            {
+                enrichment.prompt_version
+                for enrichment in [*trial_llm_enrichments, *literature_llm_enrichments]
+            }
+        )
+        model = None
+        if trial_llm_enrichments:
+            model = trial_llm_enrichments[0].model
+        elif literature_llm_enrichments:
+            model = literature_llm_enrichments[0].model
+        return LLMEnrichmentSummary(
+            trial_total=len(trials),
+            trial_succeeded=len(trial_llm_enrichments),
+            literature_total=len(literature),
+            literature_succeeded=len(literature_llm_enrichments),
+            warning_count=len(llm_warnings),
+            model=model,
+            prompt_versions=prompt_versions,
+        )

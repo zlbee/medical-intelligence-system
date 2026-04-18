@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 
 from app.domain import RawRecord, SourceName, TargetQuery
 from app.infra.db import SessionLocal, initialize_database
@@ -13,9 +12,11 @@ from app.repository.models import (
     AnalysisSnapshotModel,
     FetchRunModel,
     FetchRunRawRecordModel,
+    LiteratureLLMEnrichmentModel,
     NormalizedLiteratureRecordModel,
     NormalizedTrialRecordModel,
     RawRecordModel,
+    TrialLLMEnrichmentModel,
 )
 
 
@@ -67,11 +68,141 @@ PUBMED_XML = """
 """.strip()
 
 
-def test_analysis_pipeline_builds_and_persists_bundle() -> None:
+def test_analysis_pipeline_builds_and_persists_bundle_with_rule_only_fallback() -> None:
     initialize_database()
     session = SessionLocal()
     _clear_tables(session)
+    fetch_run_id = _seed_fetch_run(session)
 
+    bundle = AnalysisPipelineService(session).build(fetch_run_id)
+
+    normalized_trial_count = session.scalar(
+        select(func.count()).select_from(NormalizedTrialRecordModel)
+    )
+    normalized_literature_count = session.scalar(
+        select(func.count()).select_from(NormalizedLiteratureRecordModel)
+    )
+    snapshot_count = session.scalar(select(func.count()).select_from(AnalysisSnapshotModel))
+    trial_enrichment_count = session.scalar(
+        select(func.count()).select_from(TrialLLMEnrichmentModel)
+    )
+    literature_enrichment_count = session.scalar(
+        select(func.count()).select_from(LiteratureLLMEnrichmentModel)
+    )
+
+    assert bundle.global_stats.total_trial_count == 1
+    assert bundle.global_stats.total_literature_count == 1
+    assert bundle.section_inputs.pipeline_overview.trial_keys == ["NCT03188393"]
+    assert bundle.section_inputs.research_update.literature_keys == ["12345678"]
+    assert bundle.llm_enrichment_summary.trial_total == 1
+    assert bundle.llm_enrichment_summary.trial_succeeded == 0
+    assert bundle.llm_enrichment_summary.warning_count == 1
+    assert any(item.code == "llm_enrichment_disabled" for item in bundle.warnings)
+    assert normalized_trial_count == 1
+    assert normalized_literature_count == 1
+    assert snapshot_count == 1
+    assert trial_enrichment_count == 0
+    assert literature_enrichment_count == 0
+
+    session.close()
+
+
+def test_analysis_pipeline_keeps_best_effort_when_one_llm_record_fails() -> None:
+    initialize_database()
+    session = SessionLocal()
+    _clear_tables(session)
+    fetch_run_id = _seed_fetch_run(session)
+
+    bundle = AnalysisPipelineService(
+        session,
+        llm_client=StubLLMClient(
+            responses=[
+                {
+                    "dimension_insights": {
+                        "target_overview": {
+                            "can_contribute": True,
+                            "relevance_score": 88,
+                            "confidence": 72,
+                            "summary": "Target relevant trial.",
+                            "key_points": ["Mentions HER2 and breast cancer."],
+                            "evidence_snippets": [],
+                        },
+                        "pipeline_overview": {
+                            "can_contribute": True,
+                            "relevance_score": 90,
+                            "confidence": 81,
+                            "summary": "Active phase 2 pipeline asset.",
+                            "key_points": ["Recruiting phase 2 study."],
+                            "evidence_snippets": [],
+                        },
+                        "research_update": {
+                            "can_contribute": False,
+                            "relevance_score": 35,
+                            "confidence": 64,
+                            "summary": "Limited direct recency insight.",
+                            "key_points": [],
+                            "evidence_snippets": [],
+                        },
+                        "competition_assessment": {
+                            "can_contribute": True,
+                            "relevance_score": 79,
+                            "confidence": 75,
+                            "summary": "Sponsor and phase are useful for competition.",
+                            "key_points": ["Sponsor identified."],
+                            "evidence_snippets": [],
+                        },
+                    },
+                    "llm_scores": {
+                        "target_overview": 86,
+                        "pipeline_overview": 92,
+                        "research_update": 30,
+                        "competition_assessment": 80,
+                        "overall_score": 77,
+                    },
+                    "modality": "drug",
+                    "asset_candidates": ["Example Drug"],
+                    "company_candidates": ["Example Sponsor"],
+                    "risk_signals": ["No published results yet."],
+                    "opportunity_signals": ["Recruiting phase 2 study."],
+                },
+                RuntimeError("synthetic LLM failure"),
+            ]
+        ),
+        llm_model="test-model",
+    ).build(fetch_run_id)
+
+    trial_enrichment_count = session.scalar(
+        select(func.count()).select_from(TrialLLMEnrichmentModel)
+    )
+    literature_enrichment_count = session.scalar(
+        select(func.count()).select_from(LiteratureLLMEnrichmentModel)
+    )
+
+    assert bundle.llm_enrichment_summary.trial_succeeded == 1
+    assert bundle.llm_enrichment_summary.literature_succeeded == 0
+    assert bundle.llm_enrichment_summary.warning_count == 1
+    assert bundle.llm_enrichment_summary.model == "test-model"
+    assert bundle.trial_llm_enrichments[0].trial_key == "NCT03188393"
+    assert any(item.code == "literature_llm_enrichment_failed" for item in bundle.warnings)
+    assert trial_enrichment_count == 1
+    assert literature_enrichment_count == 0
+
+    session.close()
+
+
+class StubLLMClient:
+    def __init__(self, *, responses: list[dict | Exception]) -> None:
+        self.responses = responses
+
+    def generate_structured(self, **kwargs):
+        response_model = kwargs["response_model"]
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response_model.model_validate(response)
+
+
+def _seed_fetch_run(session) -> str:
     fetch_run = FetchRunRepository(session).create(
         TargetQuery(target="HER2", indication="breast cancer", aliases=["ERBB2"])
     )
@@ -110,9 +241,7 @@ def test_analysis_pipeline_builds_and_persists_bundle() -> None:
                             "phases": ["PHASE2"],
                         },
                         "armsInterventionsModule": {
-                            "interventions": [
-                                {"type": "DRUG", "name": "Example Drug"}
-                            ]
+                            "interventions": [{"type": "DRUG", "name": "Example Drug"}]
                         },
                     },
                     "derivedSection": {
@@ -135,30 +264,13 @@ def test_analysis_pipeline_builds_and_persists_bundle() -> None:
             ),
         ]
     )
-
-    bundle = AnalysisPipelineService(session).build(fetch_run.fetch_run_id)
-
-    normalized_trial_count = session.scalar(
-        select(func.count()).select_from(NormalizedTrialRecordModel)
-    )
-    normalized_literature_count = session.scalar(
-        select(func.count()).select_from(NormalizedLiteratureRecordModel)
-    )
-    snapshot_count = session.scalar(select(func.count()).select_from(AnalysisSnapshotModel))
-
-    assert bundle.global_stats.total_trial_count == 1
-    assert bundle.global_stats.total_literature_count == 1
-    assert bundle.section_inputs.pipeline_overview.trial_keys == ["NCT03188393"]
-    assert bundle.section_inputs.research_update.literature_keys == ["12345678"]
-    assert normalized_trial_count == 1
-    assert normalized_literature_count == 1
-    assert snapshot_count == 1
-
-    session.close()
+    return fetch_run.fetch_run_id
 
 
 def _clear_tables(session) -> None:
     session.execute(delete(AnalysisSnapshotModel))
+    session.execute(delete(LiteratureLLMEnrichmentModel))
+    session.execute(delete(TrialLLMEnrichmentModel))
     session.execute(delete(NormalizedLiteratureRecordModel))
     session.execute(delete(NormalizedTrialRecordModel))
     session.execute(delete(FetchRunRawRecordModel))

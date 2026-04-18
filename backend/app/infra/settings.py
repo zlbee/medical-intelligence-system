@@ -46,6 +46,8 @@ class Settings(BaseSettings):
         env_prefix="MIS_",
         case_sensitive=False,
         extra="ignore",
+        env_file=str(BACKEND_DIR.parent / ".env"),
+        env_file_encoding="utf-8",
     )
 
     @field_validator("cors_origins", mode="before")

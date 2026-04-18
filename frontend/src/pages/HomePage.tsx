@@ -12,6 +12,7 @@ import type {
   FetchRunResponse,
   NamedCount,
   RawRecord,
+  WarningItem,
 } from "../types/fetch";
 import type { HealthResponse } from "../types/health";
 
@@ -100,6 +101,44 @@ function formatNamedCounts(items: NamedCount[], limit = 4): string {
     .join(" / ");
 }
 
+type WarningSummary = {
+  key: string;
+  message: string;
+  count: number;
+  errorType: string | null;
+  errorText: string | null;
+};
+
+function summarizeWarnings(warnings: WarningItem[]): WarningSummary[] {
+  const summaryMap = new Map<string, WarningSummary>();
+
+  for (const warning of warnings) {
+    const errorType =
+      typeof warning.details.error_type === "string" ? warning.details.error_type : null;
+    const errorText =
+      typeof warning.details.error === "string" ? warning.details.error : null;
+    const key = [warning.code, warning.message, errorType ?? "", errorText ?? ""].join("|");
+    const existing = summaryMap.get(key);
+
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+
+    // Stage 2 may emit one warning per failed record. We aggregate identical failures
+    // so the UI stays readable while still surfacing the underlying cause.
+    summaryMap.set(key, {
+      key,
+      message: warning.message,
+      count: 1,
+      errorType,
+      errorText,
+    });
+  }
+
+  return Array.from(summaryMap.values());
+}
+
 export function HomePage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("idle");
@@ -117,6 +156,9 @@ export function HomePage() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisBundleResponse | null>(
     null,
   );
+  const warningSummaries = analysisResult
+    ? summarizeWarnings(analysisResult.warnings)
+    : [];
 
   useEffect(() => {
     let isMounted = true;
@@ -508,11 +550,15 @@ export function HomePage() {
                           </span>
                         </li>
                       </ul>
-                      {analysisResult.warnings.length > 0 && (
+                      {warningSummaries.length > 0 && (
                         <ul className="tag-list">
-                          {analysisResult.warnings.map((warning) => (
-                            <li key={`${warning.code}-${warning.message}`} className="tag">
+                          {warningSummaries.map((warning) => (
+                            <li key={warning.key} className="tag">
                               {warning.message}
+                              {warning.count > 1 ? ` (${warning.count} 次)` : ""}
+                              {warning.errorText
+                                ? ` 原因：${warning.errorType ?? "UnknownError"} - ${warning.errorText}`
+                                : ""}
                             </li>
                           ))}
                         </ul>

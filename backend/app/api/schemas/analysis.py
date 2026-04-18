@@ -56,6 +56,16 @@ class CoverageSnapshotResponse(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class LLMEnrichmentSummaryResponse(BaseModel):
+    trial_total: int
+    trial_succeeded: int
+    literature_total: int
+    literature_succeeded: int
+    warning_count: int
+    model: str | None = None
+    prompt_versions: list[str] = Field(default_factory=list)
+
+
 class GlobalAnalysisStatsResponse(BaseModel):
     total_trial_count: int
     total_literature_count: int
@@ -97,6 +107,7 @@ class AnalysisBundleResponse(BaseModel):
     global_stats: GlobalAnalysisStatsResponse
     coverage: CoverageSnapshotResponse
     section_inputs: SectionInputBundleResponse
+    llm_enrichment_summary: LLMEnrichmentSummaryResponse
     warnings: list[WarningItemResponse] = Field(default_factory=list)
     built_at: datetime
 
@@ -131,6 +142,9 @@ class AnalysisBundleResponse(BaseModel):
                 competition_assessment=_to_section_input_response(
                     bundle.section_inputs.competition_assessment
                 ),
+            ),
+            llm_enrichment_summary=LLMEnrichmentSummaryResponse.model_validate(
+                bundle.llm_enrichment_summary.model_dump(mode="json")
             ),
             warnings=[WarningItemResponse.from_domain(item) for item in bundle.warnings],
             built_at=bundle.built_at,

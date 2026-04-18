@@ -2,34 +2,71 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.analyze import AnalysisBundleBuilder
-from app.domain import AnalysisReadyBundle, SourceName, TargetQuery
+from app.analyze import (
+    AnalysisBundleBuilder,
+    LiteratureLLMEnhancementService,
+    TrialLLMEnhancementService,
+)
+from app.analyze.scoring import build_literature_rule_scores, build_trial_rule_scores
+from app.domain import (
+    AnalysisReadyBundle,
+    LiteratureLLMEnrichment,
+    SourceName,
+    TargetQuery,
+    TrialLLMEnrichment,
+    WarningItem,
+    WarningLevel,
+    WarningScope,
+)
 from app.infra.exceptions import AppException
+from app.llm import LLMClient
 from app.normalize import LiteratureNormalizer, TrialNormalizer
 from app.repository import (
     AnalysisSnapshotRepository,
     FetchRunRepository,
+    LiteratureLLMEnrichmentRepository,
     NormalizedLiteratureRecordRepository,
     NormalizedTrialRecordRepository,
     RawRecordRepository,
+    TrialLLMEnrichmentRepository,
 )
 
 
 class AnalysisPipelineService:
     """Runs stage 2 from persisted raw records to a reusable analysis snapshot."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        llm_client: LLMClient | None = None,
+        llm_model: str | None = None,
+    ) -> None:
         self.session = session
+        self.llm_client = llm_client
+        self.llm_model = llm_model
         self.fetch_run_repository = FetchRunRepository(session)
         self.raw_record_repository = RawRecordRepository(session)
         self.normalized_trial_record_repository = NormalizedTrialRecordRepository(session)
         self.normalized_literature_record_repository = NormalizedLiteratureRecordRepository(
             session
         )
+        self.trial_llm_enrichment_repository = TrialLLMEnrichmentRepository(session)
+        self.literature_llm_enrichment_repository = LiteratureLLMEnrichmentRepository(session)
         self.analysis_snapshot_repository = AnalysisSnapshotRepository(session)
         self.trial_normalizer = TrialNormalizer()
         self.literature_normalizer = LiteratureNormalizer()
         self.bundle_builder = AnalysisBundleBuilder()
+        self.trial_enhancement_service = (
+            TrialLLMEnhancementService(llm_client, model=llm_model)
+            if llm_client is not None
+            else None
+        )
+        self.literature_enhancement_service = (
+            LiteratureLLMEnhancementService(llm_client, model=llm_model)
+            if llm_client is not None
+            else None
+        )
 
     def build(self, fetch_run_id: str) -> AnalysisReadyBundle:
         fetch_run = self.fetch_run_repository.get(fetch_run_id)
@@ -50,6 +87,7 @@ class AnalysisPipelineService:
                 details={"fetch_run_id": fetch_run_id},
             )
 
+        query = self._to_target_query(fetch_run)
         trials = self.trial_normalizer.normalize_many(raw_records)
         literature = self.literature_normalizer.normalize_many(raw_records)
 
@@ -59,10 +97,38 @@ class AnalysisPipelineService:
             literature,
         )
 
-        bundle = self.bundle_builder.build(
-            query=self._to_target_query(fetch_run),
+        trial_rule_scores = {
+            record.trial_key: build_trial_rule_scores(query, record) for record in trials
+        }
+        literature_rule_scores = {
+            record.literature_key: build_literature_rule_scores(query, record)
+            for record in literature
+        }
+        trial_enrichments, literature_enrichments, llm_warnings = self._build_llm_enrichments(
+            fetch_run_id=fetch_run_id,
+            query=query,
+            trial_rule_scores=trial_rule_scores,
+            literature_rule_scores=literature_rule_scores,
             trials=trials,
             literature=literature,
+        )
+
+        self.trial_llm_enrichment_repository.replace_for_fetch_run(
+            fetch_run_id,
+            trial_enrichments,
+        )
+        self.literature_llm_enrichment_repository.replace_for_fetch_run(
+            fetch_run_id,
+            literature_enrichments,
+        )
+
+        bundle = self.bundle_builder.build(
+            query=query,
+            trials=trials,
+            literature=literature,
+            trial_llm_enrichments=trial_enrichments,
+            literature_llm_enrichments=literature_enrichments,
+            llm_warnings=llm_warnings,
         )
         return self.analysis_snapshot_repository.upsert(fetch_run_id, bundle)
 
@@ -84,6 +150,103 @@ class AnalysisPipelineService:
     def list_normalized_literature(self, fetch_run_id: str):
         self._ensure_fetch_run(fetch_run_id)
         return self.normalized_literature_record_repository.list_by_fetch_run(fetch_run_id)
+
+    def _build_llm_enrichments(
+        self,
+        *,
+        fetch_run_id: str,
+        query: TargetQuery,
+        trial_rule_scores: dict[str, object],
+        literature_rule_scores: dict[str, object],
+        trials,
+        literature,
+    ) -> tuple[
+        list[TrialLLMEnrichment],
+        list[LiteratureLLMEnrichment],
+        list[WarningItem],
+    ]:
+        warnings: list[WarningItem] = []
+        if self.llm_client is None or self.trial_enhancement_service is None:
+            warnings.append(
+                WarningItem(
+                    code="llm_enrichment_disabled",
+                    level=WarningLevel.WARNING,
+                    scope=WarningScope.BUNDLE,
+                    message="LLM enrichment is not configured; analysis continues with rule-score fallback only.",
+                    details={"model": self.llm_model},
+                )
+            )
+            return [], [], warnings
+
+        trial_enrichments: list[TrialLLMEnrichment] = []
+        for trial in trials:
+            try:
+                trial_enrichments.append(
+                    self.trial_enhancement_service.enhance(
+                        fetch_run_id=fetch_run_id,
+                        query=query,
+                        trial=trial,
+                        rule_scores=trial_rule_scores[trial.trial_key],
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - best-effort policy is deliberate here.
+                warnings.append(
+                    self._build_llm_record_warning(
+                        code="trial_llm_enrichment_failed",
+                        record_id=trial.trial_key,
+                        source_name=SourceName.CLINICALTRIALS.value,
+                        exc=exc,
+                    )
+                )
+
+        literature_enrichments: list[LiteratureLLMEnrichment] = []
+        if self.literature_enhancement_service is None:
+            return trial_enrichments, literature_enrichments, warnings
+        for paper in literature:
+            try:
+                literature_enrichments.append(
+                    self.literature_enhancement_service.enhance(
+                        fetch_run_id=fetch_run_id,
+                        query=query,
+                        literature=paper,
+                        rule_scores=literature_rule_scores[paper.literature_key],
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - best-effort policy is deliberate here.
+                warnings.append(
+                    self._build_llm_record_warning(
+                        code="literature_llm_enrichment_failed",
+                        record_id=paper.literature_key,
+                        source_name=SourceName.PUBMED.value,
+                        exc=exc,
+                    )
+                )
+        return trial_enrichments, literature_enrichments, warnings
+
+    def _build_llm_record_warning(
+        self,
+        *,
+        code: str,
+        record_id: str,
+        source_name: str,
+        exc: Exception,
+    ) -> WarningItem:
+        return WarningItem(
+            code=code,
+            level=WarningLevel.WARNING,
+            scope=WarningScope.RECORD,
+            message=(
+                "LLM enrichment failed for one record; rule-score fallback will be used "
+                "for downstream ranking."
+            ),
+            related_ids=[record_id],
+            details={
+                "record_id": record_id,
+                "source_name": source_name,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
 
     def _ensure_fetch_run(self, fetch_run_id: str) -> None:
         if self.fetch_run_repository.get(fetch_run_id) is None:

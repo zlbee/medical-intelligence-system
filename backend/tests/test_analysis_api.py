@@ -8,6 +8,7 @@ from app.api.deps import get_analysis_pipeline_service
 from app.domain import (
     AnalysisReadyBundle,
     GlobalAnalysisStats,
+    LLMEnrichmentSummary,
     NamedCount,
     TargetOverviewFacts,
     TargetQuery,
@@ -47,9 +48,11 @@ def test_build_analysis_endpoint_returns_summary_payload() -> None:
         "HER2",
         "ERBB2",
     ]
+    assert payload["llm_enrichment_summary"]["trial_total"] == 2
     assert payload["warnings"][0]["code"] == "bundle_incomplete_coverage"
     assert "trials" not in payload
     assert "literature" not in payload
+    assert "trial_llm_enrichments" not in payload
 
 
 def test_get_analysis_endpoint_returns_latest_snapshot() -> None:
@@ -80,6 +83,15 @@ def _build_bundle() -> AnalysisReadyBundle:
             total_trial_count=2,
             total_literature_count=3,
             top_sponsors=[NamedCount(name="Example Sponsor", count=2)],
+        ),
+        llm_enrichment_summary=LLMEnrichmentSummary(
+            trial_total=2,
+            trial_succeeded=1,
+            literature_total=3,
+            literature_succeeded=2,
+            warning_count=1,
+            model="test-model",
+            prompt_versions=["trial_enrichment_v1", "literature_enrichment_v1"],
         ),
     )
     bundle.section_inputs.target_overview.trial_keys = ["NCT00000001"]

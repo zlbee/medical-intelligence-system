@@ -5,9 +5,12 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.domain.fetching import SourceName, TargetQuery
+
+MAX_EVIDENCE_SNIPPETS = 2
+MAX_EVIDENCE_EXCERPT_LENGTH = 280
 
 
 class DatePrecision(str, Enum):
@@ -27,6 +30,13 @@ class WarningScope(str, Enum):
     RECORD = "record"
     SECTION = "section"
     BUNDLE = "bundle"
+
+
+class AnalysisDimensionName(str, Enum):
+    TARGET_OVERVIEW = "target_overview"
+    PIPELINE_OVERVIEW = "pipeline_overview"
+    RESEARCH_UPDATE = "research_update"
+    COMPETITION_ASSESSMENT = "competition_assessment"
 
 
 class SourceTrace(BaseModel):
@@ -198,6 +208,132 @@ class NormalizedLiteratureRecord(BaseModel):
     quality_flags: list[str] = Field(default_factory=list)
 
 
+class EvidenceSnippet(BaseModel):
+    field_name: str
+    excerpt: str
+    reason: str
+
+    @field_validator("excerpt")
+    @classmethod
+    def truncate_excerpt(cls, value: str) -> str:
+        return value[:MAX_EVIDENCE_EXCERPT_LENGTH]
+
+
+class DimensionInsight(BaseModel):
+    can_contribute: bool = False
+    relevance_score: float = 0.0
+    confidence: float = 0.0
+    summary: str | None = None
+    key_points: list[str] = Field(default_factory=list)
+    evidence_snippets: list[EvidenceSnippet] = Field(default_factory=list)
+
+    @field_validator("relevance_score", "confidence")
+    @classmethod
+    def clamp_percentage_fields(cls, value: float) -> float:
+        return max(0.0, min(float(value), 100.0))
+
+    @field_validator("evidence_snippets")
+    @classmethod
+    def limit_evidence_snippets(
+        cls,
+        snippets: list[EvidenceSnippet],
+    ) -> list[EvidenceSnippet]:
+        return snippets[:MAX_EVIDENCE_SNIPPETS]
+
+
+class DimensionInsightBreakdown(BaseModel):
+    target_overview: DimensionInsight = Field(default_factory=DimensionInsight)
+    pipeline_overview: DimensionInsight = Field(default_factory=DimensionInsight)
+    research_update: DimensionInsight = Field(default_factory=DimensionInsight)
+    competition_assessment: DimensionInsight = Field(default_factory=DimensionInsight)
+
+
+class ScoreBreakdown(BaseModel):
+    target_overview: float = 0.0
+    pipeline_overview: float = 0.0
+    research_update: float = 0.0
+    competition_assessment: float = 0.0
+    overall_score: float = 0.0
+
+    @field_validator(
+        "target_overview",
+        "pipeline_overview",
+        "research_update",
+        "competition_assessment",
+        "overall_score",
+    )
+    @classmethod
+    def clamp_score_fields(cls, value: float) -> float:
+        return max(0.0, min(float(value), 100.0))
+
+
+class RuleScoreBreakdown(ScoreBreakdown):
+    pass
+
+
+class LLMScoreBreakdown(ScoreBreakdown):
+    pass
+
+
+class FinalScoreBreakdown(ScoreBreakdown):
+    pass
+
+
+class TrialLLMEnrichment(BaseModel):
+    """Record-level LLM analysis for one normalized trial."""
+
+    fetch_run_id: str
+    trial_key: str
+    nct_id: str | None = None
+    dimension_insights: DimensionInsightBreakdown = Field(
+        default_factory=DimensionInsightBreakdown
+    )
+    rule_scores: RuleScoreBreakdown = Field(default_factory=RuleScoreBreakdown)
+    llm_scores: LLMScoreBreakdown = Field(default_factory=LLMScoreBreakdown)
+    final_scores: FinalScoreBreakdown = Field(default_factory=FinalScoreBreakdown)
+    modality: str | None = None
+    asset_candidates: list[str] = Field(default_factory=list)
+    company_candidates: list[str] = Field(default_factory=list)
+    risk_signals: list[str] = Field(default_factory=list)
+    opportunity_signals: list[str] = Field(default_factory=list)
+    model: str | None = None
+    prompt_version: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class LiteratureLLMEnrichment(BaseModel):
+    """Record-level LLM analysis for one normalized literature record."""
+
+    fetch_run_id: str
+    literature_key: str
+    pmid: str | None = None
+    doi: str | None = None
+    dimension_insights: DimensionInsightBreakdown = Field(
+        default_factory=DimensionInsightBreakdown
+    )
+    rule_scores: RuleScoreBreakdown = Field(default_factory=RuleScoreBreakdown)
+    llm_scores: LLMScoreBreakdown = Field(default_factory=LLMScoreBreakdown)
+    final_scores: FinalScoreBreakdown = Field(default_factory=FinalScoreBreakdown)
+    study_design: str | None = None
+    mechanism_themes: list[str] = Field(default_factory=list)
+    efficacy_signals: list[str] = Field(default_factory=list)
+    safety_signals: list[str] = Field(default_factory=list)
+    trial_link_hints: list[str] = Field(default_factory=list)
+    model: str | None = None
+    prompt_version: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class LLMEnrichmentSummary(BaseModel):
+    trial_total: int = 0
+    trial_succeeded: int = 0
+    literature_total: int = 0
+    literature_succeeded: int = 0
+    warning_count: int = 0
+    model: str | None = None
+    prompt_versions: list[str] = Field(default_factory=list)
+
+
 class TargetOverviewFacts(BaseModel):
     alias_terms: list[str] = Field(default_factory=list)
     disease_contexts: list[str] = Field(default_factory=list)
@@ -300,8 +436,11 @@ class AnalysisReadyBundle(BaseModel):
     query: TargetQuery
     trials: list[NormalizedTrialRecord] = Field(default_factory=list)
     literature: list[NormalizedLiteratureRecord] = Field(default_factory=list)
+    trial_llm_enrichments: list[TrialLLMEnrichment] = Field(default_factory=list)
+    literature_llm_enrichments: list[LiteratureLLMEnrichment] = Field(default_factory=list)
     global_stats: GlobalAnalysisStats = Field(default_factory=GlobalAnalysisStats)
     coverage: CoverageSnapshot = Field(default_factory=CoverageSnapshot)
     section_inputs: SectionInputBundle = Field(default_factory=SectionInputBundle)
+    llm_enrichment_summary: LLMEnrichmentSummary = Field(default_factory=LLMEnrichmentSummary)
     warnings: list[WarningItem] = Field(default_factory=list)
     built_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
