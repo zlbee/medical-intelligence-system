@@ -156,9 +156,15 @@ class PubMedConnector(BaseConnector):
         if query.indication:
             clauses.append(f'("{query.indication}"[Title/Abstract])')
 
-        clauses.extend(
-            f'"{term}"[Publication Type]' for term in filters.publication_types
-        )
+        publication_type_clauses = [
+            f'"{term}"[Publication Type]'
+            for term in dict.fromkeys(item.strip() for item in filters.publication_types if item.strip())
+        ]
+        if publication_type_clauses:
+            # Publication types are alternative article-type filters. Group them
+            # with OR so selecting multiple types broadens the PubMed search
+            # instead of requiring every article to carry all listed types.
+            clauses.append(f"({' OR '.join(publication_type_clauses)})")
         clauses.extend(f'"{term}"[Journal]' for term in filters.journals)
         clauses.extend(f'"{term}"[Author]' for term in filters.authors)
         clauses.extend(f'"{term}"[MeSH Terms]' for term in filters.mesh_terms)

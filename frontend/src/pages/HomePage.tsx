@@ -43,6 +43,15 @@ const today = new Date();
 const oneYearAgo = new Date(today);
 oneYearAgo.setFullYear(today.getFullYear() - 1);
 
+// Keep the target/alias terms in the dedicated form fields. The default
+// ClinicalTrials query term only contributes additional study filters so the
+// frontend can safely merge both parts before submission.
+const defaultClinicalTrialsFilterTerm = [
+  "(AREA[Phase]PHASE2 OR AREA[Phase]PHASE3)",
+  "AREA[StudyType]INTERVENTIONAL",
+  `AREA[LastUpdatePostDate]RANGE[${formatClinicalTrialsDate(oneYearAgo)}, MAX]`,
+].join(" AND ");
+
 const defaultSourceConfigs = JSON.stringify(
   {
     clinicaltrials: {
@@ -50,10 +59,10 @@ const defaultSourceConfigs = JSON.stringify(
       page_size: 5,
       count_total: true,
       query: {
-        term: `(AREA[Phase]\"Phase 2\" OR AREA[Phase]\"Phase 3\") AND AREA[LastUpdatePostDate]RANGE[${formatClinicalTrialsDate(oneYearAgo)}, MAX]`,
+        term: defaultClinicalTrialsFilterTerm,
       },
       filters: {
-        overallStatus: ["RECRUITING", "ACTIVE_NOT_RECRUITING"],
+        overallStatus: ["RECRUITING", "ACTIVE_NOT_RECRUITING", "COMPLETED"],
       },
     },
     pubmed: {
@@ -62,9 +71,10 @@ const defaultSourceConfigs = JSON.stringify(
       batch_size: 5,
       sort: "pub_date",
       filters: {
-        publication_types: ["Clinical Trial"],
-        extra_terms: [
-          "(\"phase ii\"[Title/Abstract] OR \"phase iii\"[Title/Abstract] OR \"phase 2\"[Title/Abstract] OR \"phase 3\"[Title/Abstract])",
+        publication_types: [
+          "Clinical Trial",
+          "Clinical Trial, Phase II",
+          "Clinical Trial, Phase III",
         ],
         date_from: formatDate(oneYearAgo),
         date_to: formatDate(today),
@@ -152,6 +162,55 @@ type SnapshotSummary = {
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function buildClinicalTrialsTargetExpression(target: string, aliases: string[]): string {
+  const terms = [target, ...aliases]
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const uniqueTerms = Array.from(new Set(terms));
+
+  if (uniqueTerms.length === 1) {
+    return uniqueTerms[0];
+  }
+
+  return uniqueTerms.join(" OR ");
+}
+
+function mergeClinicalTrialsTargetIntoSourceConfigs(
+  sourceConfigs: Record<string, unknown>,
+  target: string,
+  aliases: string[],
+): Record<string, unknown> {
+  const clinicalTrialsConfig = sourceConfigs.clinicaltrials;
+  if (!isObjectRecord(clinicalTrialsConfig)) {
+    return sourceConfigs;
+  }
+
+  const clinicalTrialsQuery = isObjectRecord(clinicalTrialsConfig.query)
+    ? clinicalTrialsConfig.query
+    : {};
+  const configuredTerm =
+    typeof clinicalTrialsQuery.term === "string" ? clinicalTrialsQuery.term.trim() : "";
+  const targetExpression = buildClinicalTrialsTargetExpression(target, aliases);
+
+  if (!configuredTerm || !targetExpression) {
+    return sourceConfigs;
+  }
+
+  // The source-config editor is intended for supplemental ClinicalTrials filters.
+  // Merge the target inputs back into query.term so adding phase/date constraints
+  // does not silently discard the requested target.
+  return {
+    ...sourceConfigs,
+    clinicaltrials: {
+      ...clinicalTrialsConfig,
+      query: {
+        ...clinicalTrialsQuery,
+        term: `(${targetExpression}) AND (${configuredTerm})`,
+      },
+    },
+  };
 }
 
 function isClinicalTrialsPageSnapshot(value: unknown): value is ClinicalTrialsPageSnapshot {
@@ -338,14 +397,20 @@ export function HomePage() {
     setReportAction(null);
 
     try {
-      const sourceConfigs = JSON.parse(sourceConfigText) as Record<string, unknown>;
+      const aliasList = aliases
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const parsedSourceConfigs = JSON.parse(sourceConfigText) as Record<string, unknown>;
+      const sourceConfigs = mergeClinicalTrialsTargetIntoSourceConfigs(
+        parsedSourceConfigs,
+        target,
+        aliasList,
+      );
       const payload = {
         target,
         indication,
-        aliases: aliases
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
+        aliases: aliasList,
         source_configs: sourceConfigs,
       };
       const created = await createFetchRun(payload);

@@ -74,6 +74,34 @@ def test_pubmed_connector_supports_json_filter_config() -> None:
     assert result.request_snapshot["stop_reason"] == "retstart_exhausted_total_count"
 
 
+def test_pubmed_connector_groups_publication_types_with_or() -> None:
+    connector = PubMedConnector(settings=Settings())
+    query = TargetQuery.model_validate(
+        {
+            "target": "HER2",
+            "source_configs": {
+                "pubmed": {
+                    "filters": {
+                        "publication_types": [
+                            "Clinical Trial",
+                            "Clinical Trial, Phase II",
+                            "Clinical Trial, Phase III",
+                        ]
+                    }
+                }
+            },
+        }
+    )
+
+    term = connector._build_term(query)
+
+    assert (
+        '("Clinical Trial"[Publication Type] OR "Clinical Trial, Phase II"[Publication Type] '
+        'OR "Clinical Trial, Phase III"[Publication Type])'
+    ) in term
+    assert '"Clinical Trial"[Publication Type] AND "Clinical Trial, Phase II"[Publication Type]' not in term
+
+
 def test_pubmed_connector_fetches_multiple_rounds_until_record_cap() -> None:
     observed_retstarts: list[str] = []
     observed_efetch_sizes: list[int] = []
