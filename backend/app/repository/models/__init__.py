@@ -11,6 +11,8 @@ from app.repository.models.normalized_literature_record import (
 )
 from app.repository.models.normalized_trial_record import NormalizedTrialRecordModel
 from app.repository.models.raw_record import RawRecordModel
+from app.repository.models.report import ReportModel
+from app.repository.models.report_source_ref import ReportSourceRefModel
 from app.repository.models.trial_llm_enrichment import TrialLLMEnrichmentModel
 
 __all__ = [
@@ -21,5 +23,7 @@ __all__ = [
     "NormalizedLiteratureRecordModel",
     "NormalizedTrialRecordModel",
     "RawRecordModel",
+    "ReportModel",
+    "ReportSourceRefModel",
     "TrialLLMEnrichmentModel",
 ]

@@ -54,6 +54,16 @@ from app.domain.fetching import (
     SourceName,
     TargetQuery,
 )
+from app.domain.report import (
+    GeneratedSectionDraft,
+    ReportDocument,
+    ReportSection,
+    ReportSourceRef,
+    ReportSourceType,
+    ReportWarningSummary,
+    SECTION_TITLES,
+    SectionGenerationContext,
+)
 
 __all__ = [
     "AbstractSection",
@@ -92,8 +102,15 @@ __all__ = [
     "RawRecord",
     "ResearchUpdateFacts",
     "ResearchUpdateSectionInput",
+    "ReportDocument",
+    "ReportSection",
+    "ReportSourceRef",
+    "ReportSourceType",
+    "ReportWarningSummary",
     "RuleScoreBreakdown",
+    "SECTION_TITLES",
     "ScoreBreakdown",
+    "SectionGenerationContext",
     "SectionInputBundle",
     "SourceFetchSummary",
     "SourceName",
@@ -106,4 +123,5 @@ __all__ = [
     "WarningItem",
     "WarningLevel",
     "WarningScope",
+    "GeneratedSectionDraft",
 ]

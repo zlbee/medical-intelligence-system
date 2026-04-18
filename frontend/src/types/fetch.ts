@@ -170,3 +170,35 @@ export interface AnalysisBundleResponse {
   built_at: string;
 }
 
+export interface ReportWarningSummary {
+  code: string;
+  message: string;
+  count: number;
+}
+
+export interface ReportSection {
+  section_name: string;
+  title: string;
+  summary: string;
+  markdown_body: string;
+  key_takeaways: string[];
+  trial_keys: string[];
+  literature_keys: string[];
+  warnings: string[];
+}
+
+export interface ReportResponse {
+  report_id: string;
+  fetch_run_id: string;
+  analysis_bundle_id: string;
+  target: string;
+  indication: string | null;
+  markdown_content: string;
+  sections: ReportSection[];
+  warnings: WarningItem[];
+  warning_summary: ReportWarningSummary[];
+  model: string | null;
+  prompt_versions: string[];
+  generated_at: string;
+}
+

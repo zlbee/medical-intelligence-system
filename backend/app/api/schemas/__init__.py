@@ -8,6 +8,10 @@ from app.api.schemas.fetches import (
     RawRecordResponse,
 )
 from app.api.schemas.health import ComponentStatus, HealthResponse
+from app.api.schemas.reports import (
+    ReportResponse,
+    ReportSourceRefListResponse,
+)
 
 __all__ = [
     "AnalysisBundleResponse",
@@ -17,5 +21,7 @@ __all__ = [
     "HealthResponse",
     "RawRecordListResponse",
     "RawRecordResponse",
+    "ReportResponse",
+    "ReportSourceRefListResponse",
 ]
 

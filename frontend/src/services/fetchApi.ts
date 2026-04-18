@@ -3,6 +3,7 @@ import type {
   FetchCreateRequest,
   FetchRunResponse,
   RawRecordListResponse,
+  ReportResponse,
 } from "../types/fetch";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -59,5 +60,29 @@ export async function getAnalysisBundle(
     throw new Error(`分析快照查询失败：${response.status} ${errorText}`);
   }
   return response.json() as Promise<AnalysisBundleResponse>;
+}
+
+export async function buildReport(
+  fetchRunId: string,
+): Promise<ReportResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/fetches/${fetchRunId}/report`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`阶段 3 报告生成失败：${response.status} ${errorText}`);
+  }
+  return response.json() as Promise<ReportResponse>;
+}
+
+export async function getReport(
+  fetchRunId: string,
+): Promise<ReportResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/fetches/${fetchRunId}/report`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`报告查询失败：${response.status} ${errorText}`);
+  }
+  return response.json() as Promise<ReportResponse>;
 }
 

@@ -204,6 +204,10 @@ h2 {
   border: 1px solid rgba(19, 48, 64, 0.06);
 }
 
+.report-card {
+  margin-top: 12px;
+}
+
 .compact-list {
   display: grid;
   gap: 10px;

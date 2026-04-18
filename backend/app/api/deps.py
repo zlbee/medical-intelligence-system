@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.orchestration import AnalysisPipelineService
 from app.orchestration import FetchPipelineService
+from app.orchestration import ReportGenerationService
 from app.infra.db import SessionLocal
 from app.infra.settings import Settings, get_settings
 from app.llm import LLMClient, LLMError, build_llm_client
@@ -49,6 +50,23 @@ def get_analysis_pipeline_service(
         session,
         llm_client=llm_client,
         llm_model=settings.llm_default_model,
+    )
+
+
+def get_report_generation_service(
+    session: Session = Depends(get_db_session),
+) -> ReportGenerationService:
+    settings = get_settings()
+    llm_client: LLMClient | None = None
+    try:
+        llm_client = build_llm_client(settings)
+    except LLMError:
+        llm_client = None
+    return ReportGenerationService(
+        session,
+        llm_client=llm_client,
+        llm_model=settings.llm_default_model,
+        report_output_dir=settings.report_output_dir,
     )
 
 

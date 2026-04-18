@@ -12,6 +12,8 @@ from app.repository.normalized_trial_record_repository import (
     NormalizedTrialRecordRepository,
 )
 from app.repository.raw_record_repository import RawRecordRepository
+from app.repository.report_repository import ReportRepository
+from app.repository.report_source_ref_repository import ReportSourceRefRepository
 from app.repository.trial_llm_enrichment_repository import TrialLLMEnrichmentRepository
 
 __all__ = [
@@ -21,5 +23,7 @@ __all__ = [
     "NormalizedLiteratureRecordRepository",
     "NormalizedTrialRecordRepository",
     "RawRecordRepository",
+    "ReportRepository",
+    "ReportSourceRefRepository",
     "TrialLLMEnrichmentRepository",
 ]

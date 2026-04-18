@@ -2,8 +2,10 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import {
   buildAnalysisBundle,
+  buildReport,
   createFetchRun,
   getAnalysisBundle,
+  getReport,
   listRawRecords,
 } from "../services/fetchApi";
 import { fetchHealth } from "../services/healthApi";
@@ -12,6 +14,7 @@ import type {
   FetchRunResponse,
   NamedCount,
   RawRecord,
+  ReportResponse,
   WarningItem,
 } from "../types/fetch";
 import type { HealthResponse } from "../types/health";
@@ -19,6 +22,8 @@ import type { HealthResponse } from "../types/health";
 type LoadState = "idle" | "loading" | "success" | "error";
 type SubmitState = "idle" | "submitting" | "success" | "error";
 type AnalysisState = "idle" | "loading" | "success" | "error";
+type ReportState = "idle" | "loading" | "success" | "error";
+type ReportAction = "build" | "download" | null;
 
 function formatDate(date: Date): string {
   const year = date.getFullYear();
@@ -139,6 +144,23 @@ function summarizeWarnings(warnings: WarningItem[]): WarningSummary[] {
   return Array.from(summaryMap.values());
 }
 
+function buildReportFileName(report: ReportResponse): string {
+  const targetPart = report.target.trim().replace(/[\\/:*?"<>|\s]+/g, "-") || "report";
+  return `${targetPart}-${report.fetch_run_id}.md`;
+}
+
+function downloadMarkdownReport(report: ReportResponse): void {
+  const blob = new Blob([report.markdown_content], { type: "text/markdown;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = buildReportFileName(report);
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 export function HomePage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("idle");
@@ -156,6 +178,10 @@ export function HomePage() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisBundleResponse | null>(
     null,
   );
+  const [reportState, setReportState] = useState<ReportState>("idle");
+  const [reportError, setReportError] = useState("");
+  const [reportResult, setReportResult] = useState<ReportResponse | null>(null);
+  const [reportAction, setReportAction] = useState<ReportAction>(null);
   const warningSummaries = analysisResult
     ? summarizeWarnings(analysisResult.warnings)
     : [];
@@ -199,6 +225,10 @@ export function HomePage() {
     setAnalysisState("idle");
     setAnalysisError("");
     setAnalysisResult(null);
+    setReportState("idle");
+    setReportError("");
+    setReportResult(null);
+    setReportAction(null);
 
     try {
       const sourceConfigs = JSON.parse(sourceConfigText) as Record<string, unknown>;
@@ -230,6 +260,10 @@ export function HomePage() {
     }
     setAnalysisError("");
     setAnalysisState("loading");
+    setReportState("idle");
+    setReportError("");
+    setReportResult(null);
+    setReportAction(null);
 
     try {
       const built = await buildAnalysisBundle(fetchResult.fetch_run_id);
@@ -249,6 +283,10 @@ export function HomePage() {
     }
     setAnalysisError("");
     setAnalysisState("loading");
+    setReportState("idle");
+    setReportError("");
+    setReportResult(null);
+    setReportAction(null);
 
     try {
       const loaded = await getAnalysisBundle(fetchResult.fetch_run_id);
@@ -259,6 +297,51 @@ export function HomePage() {
         error instanceof Error ? error.message : "分析快照查询失败。";
       setAnalysisError(message);
       setAnalysisState("error");
+    }
+  }
+
+  async function handleBuildReport() {
+    if (!fetchResult) {
+      return;
+    }
+    setReportError("");
+    setReportState("loading");
+    setReportAction("build");
+
+    try {
+      const built = await buildReport(fetchResult.fetch_run_id);
+      setReportResult(built);
+      setReportState("success");
+      setReportAction(null);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "阶段 3 报告生成失败。";
+      setReportError(message);
+      setReportState("error");
+      setReportAction(null);
+    }
+  }
+
+  async function handleDownloadReport() {
+    if (!fetchResult) {
+      return;
+    }
+    setReportError("");
+    setReportState("loading");
+    setReportAction("download");
+
+    try {
+      const report = reportResult ?? (await getReport(fetchResult.fetch_run_id));
+      setReportResult(report);
+      setReportState("success");
+      setReportAction(null);
+      downloadMarkdownReport(report);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Markdown 报告下载失败。";
+      setReportError(message);
+      setReportState("error");
+      setReportAction(null);
     }
   }
 
@@ -443,10 +526,62 @@ export function HomePage() {
                 >
                   读取已保存分析快照
                 </button>
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={handleBuildReport}
+                  disabled={reportState === "loading"}
+                >
+                  {reportState === "loading" && reportAction === "build"
+                    ? "正在生成阶段 3 报告..."
+                    : reportResult
+                      ? "重新生成报告"
+                      : "生成报告"}
+                </button>
+                <button
+                  type="button"
+                  className="action-button action-button-secondary"
+                  onClick={handleDownloadReport}
+                  disabled={reportState === "loading"}
+                >
+                  {reportState === "loading" && reportAction === "download"
+                    ? "正在下载 Markdown..."
+                    : "下载 Markdown 报告"}
+                </button>
               </div>
 
               {analysisState === "error" && (
                 <p className="status status-error">执行失败：{analysisError}</p>
+              )}
+
+              {reportState === "error" && (
+                <p className="status status-error">执行失败：{reportError}</p>
+              )}
+
+              {reportResult && (
+                <article className="result-card analysis-card report-card">
+                  <h3>阶段 3 报告</h3>
+                  <dl className="meta-list">
+                    <div>
+                      <dt>Report ID</dt>
+                      <dd>{reportResult.report_id}</dd>
+                    </div>
+                    <div>
+                      <dt>关联 Bundle</dt>
+                      <dd>{reportResult.analysis_bundle_id}</dd>
+                    </div>
+                    <div>
+                      <dt>生成时间</dt>
+                      <dd>{formatDateTime(reportResult.generated_at)}</dd>
+                    </div>
+                    <div>
+                      <dt>章节数 / Warning</dt>
+                      <dd>
+                        {reportResult.sections.length} / {reportResult.warning_summary.length}
+                      </dd>
+                    </div>
+                  </dl>
+                </article>
               )}
 
               {analysisResult && (
