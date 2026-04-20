@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sqlalchemy.orm import Session
 
 from app.analyze import (
     AnalysisBundleBuilder,
     LiteratureLLMEnhancementService,
+    SectionSelector,
     TrialLLMEnhancementService,
 )
 from app.analyze.scoring import build_literature_rule_scores, build_trial_rule_scores
@@ -35,6 +38,17 @@ from app.repository import (
     TrialLLMEnrichmentRepository,
 )
 
+SELECTOR_CANDIDATE_POOL_MULTIPLIER = 2
+
+
+@dataclass(slots=True)
+class _LLMEnrichmentResult:
+    trial_enrichments: list[TrialLLMEnrichment]
+    literature_enrichments: list[LiteratureLLMEnrichment]
+    warnings: list[WarningItem]
+    selector_trials: list[NormalizedTrialRecord] | None = None
+    selector_literature: list[NormalizedLiteratureRecord] | None = None
+
 
 class AnalysisPipelineService:
     """Runs stage 2 from persisted raw records to a reusable analysis snapshot."""
@@ -46,13 +60,11 @@ class AnalysisPipelineService:
         llm_client: LLMClient | None = None,
         llm_model: str | None = None,
         llm_enrichment_full_scan: bool = True,
-        llm_enrichment_top_n: int = 20,
     ) -> None:
         self.session = session
         self.llm_client = llm_client
         self.llm_model = llm_model
         self.llm_enrichment_full_scan = llm_enrichment_full_scan
-        self.llm_enrichment_top_n = llm_enrichment_top_n
         self.fetch_run_repository = FetchRunRepository(session)
         self.raw_record_repository = RawRecordRepository(session)
         self.normalized_trial_record_repository = NormalizedTrialRecordRepository(session)
@@ -112,7 +124,7 @@ class AnalysisPipelineService:
             record.literature_key: build_literature_rule_scores(query, record)
             for record in literature
         }
-        trial_enrichments, literature_enrichments, llm_warnings = self._build_llm_enrichments(
+        llm_result = self._build_llm_enrichments(
             fetch_run_id=fetch_run_id,
             query=query,
             trial_rule_scores=trial_rule_scores,
@@ -123,20 +135,22 @@ class AnalysisPipelineService:
 
         self.trial_llm_enrichment_repository.replace_for_fetch_run(
             fetch_run_id,
-            trial_enrichments,
+            llm_result.trial_enrichments,
         )
         self.literature_llm_enrichment_repository.replace_for_fetch_run(
             fetch_run_id,
-            literature_enrichments,
+            llm_result.literature_enrichments,
         )
 
         bundle = self.bundle_builder.build(
             query=query,
             trials=trials,
             literature=literature,
-            trial_llm_enrichments=trial_enrichments,
-            literature_llm_enrichments=literature_enrichments,
-            llm_warnings=llm_warnings,
+            selector_trials=llm_result.selector_trials,
+            selector_literature=llm_result.selector_literature,
+            trial_llm_enrichments=llm_result.trial_enrichments,
+            literature_llm_enrichments=llm_result.literature_enrichments,
+            llm_warnings=llm_result.warnings,
         )
         return self.analysis_snapshot_repository.upsert(fetch_run_id, bundle)
 
@@ -168,11 +182,7 @@ class AnalysisPipelineService:
         literature_rule_scores: dict[str, RuleScoreBreakdown],
         trials: list[NormalizedTrialRecord],
         literature: list[NormalizedLiteratureRecord],
-    ) -> tuple[
-        list[TrialLLMEnrichment],
-        list[LiteratureLLMEnrichment],
-        list[WarningItem],
-    ]:
+    ) -> _LLMEnrichmentResult:
         warnings: list[WarningItem] = []
         trial_enrichment_map = self.trial_llm_enrichment_repository.find_latest_by_trial_keys(
             [record.trial_key for record in trials]
@@ -182,12 +192,21 @@ class AnalysisPipelineService:
                 [record.literature_key for record in literature]
             )
         )
+        selected_trials, selected_literature = self._select_llm_candidates(
+            query=query,
+            trials=trials,
+            literature=literature,
+            trial_enrichments_by_key=trial_enrichment_map,
+            literature_enrichments_by_key=literature_enrichment_map,
+        )
+        selector_trials = None if self.llm_enrichment_full_scan else selected_trials
+        selector_literature = None if self.llm_enrichment_full_scan else selected_literature
         trial_enrichments = [
             self._clone_trial_enrichment_for_fetch(
                 fetch_run_id=fetch_run_id,
                 enrichment=trial_enrichment_map[record.trial_key],
             )
-            for record in trials
+            for record in selected_trials
             if record.trial_key in trial_enrichment_map
         ]
         literature_enrichments = [
@@ -195,11 +214,21 @@ class AnalysisPipelineService:
                 fetch_run_id=fetch_run_id,
                 enrichment=literature_enrichment_map[record.literature_key],
             )
-            for record in literature
+            for record in selected_literature
             if record.literature_key in literature_enrichment_map
         ]
         cached_trial_keys = {record.trial_key for record in trial_enrichments}
         cached_literature_keys = {record.literature_key for record in literature_enrichments}
+
+        if not self.llm_enrichment_full_scan:
+            warnings.extend(
+                self._build_selector_pool_warning(
+                    trial_candidates=selected_trials,
+                    literature_candidates=selected_literature,
+                    total_trial_count=len(trials),
+                    total_literature_count=len(literature),
+                )
+            )
 
         if self.llm_client is None or self.trial_enhancement_service is None:
             warnings.append(
@@ -214,22 +243,12 @@ class AnalysisPipelineService:
                     details={"model": self.llm_model},
                 )
             )
-            return trial_enrichments, literature_enrichments, warnings
-
-        selected_trials, selected_literature = self._select_llm_candidates(
-            trial_rule_scores=trial_rule_scores,
-            literature_rule_scores=literature_rule_scores,
-            trials=trials,
-            literature=literature,
-        )
-        if not self.llm_enrichment_full_scan:
-            warnings.extend(
-                self._build_selective_enrichment_warnings(
-                    trial_candidates=selected_trials,
-                    literature_candidates=selected_literature,
-                    total_trial_count=len(trials),
-                    total_literature_count=len(literature),
-                )
+            return _LLMEnrichmentResult(
+                trial_enrichments=trial_enrichments,
+                literature_enrichments=literature_enrichments,
+                warnings=warnings,
+                selector_trials=selector_trials,
+                selector_literature=selector_literature,
             )
 
         for trial in selected_trials:
@@ -255,7 +274,13 @@ class AnalysisPipelineService:
                 )
 
         if self.literature_enhancement_service is None:
-            return trial_enrichments, literature_enrichments, warnings
+            return _LLMEnrichmentResult(
+                trial_enrichments=trial_enrichments,
+                literature_enrichments=literature_enrichments,
+                warnings=warnings,
+                selector_trials=selector_trials,
+                selector_literature=selector_literature,
+            )
         for paper in selected_literature:
             if paper.literature_key in cached_literature_keys:
                 continue
@@ -277,44 +302,92 @@ class AnalysisPipelineService:
                         exc=exc,
                     )
                 )
-        return trial_enrichments, literature_enrichments, warnings
+        return _LLMEnrichmentResult(
+            trial_enrichments=trial_enrichments,
+            literature_enrichments=literature_enrichments,
+            warnings=warnings,
+            selector_trials=selector_trials,
+            selector_literature=selector_literature,
+        )
 
     def _select_llm_candidates(
         self,
         *,
-        trial_rule_scores: dict[str, RuleScoreBreakdown],
-        literature_rule_scores: dict[str, RuleScoreBreakdown],
+        query: TargetQuery,
         trials: list[NormalizedTrialRecord],
         literature: list[NormalizedLiteratureRecord],
+        trial_enrichments_by_key: dict[str, TrialLLMEnrichment],
+        literature_enrichments_by_key: dict[str, LiteratureLLMEnrichment],
     ) -> tuple[list[NormalizedTrialRecord], list[NormalizedLiteratureRecord]]:
         if self.llm_enrichment_full_scan:
             return trials, literature
-        if self.llm_enrichment_top_n == 0:
-            return [], []
 
-        ranked_trials = sorted(
+        selector = self._build_candidate_pool_selector()
+        target_selection = selector.select_target_overview(
+            query,
             trials,
-            key=lambda record: (
-                trial_rule_scores[record.trial_key].overall_score,
-                record.trial_key,
-            ),
-            reverse=True,
-        )
-        ranked_literature = sorted(
             literature,
-            key=lambda record: (
-                literature_rule_scores[record.literature_key].overall_score,
-                self._literature_publication_ordinal(record),
-                record.literature_key,
-            ),
-            reverse=True,
+            trial_enrichments_by_key=trial_enrichments_by_key,
+            literature_enrichments_by_key=literature_enrichments_by_key,
+        )
+        pipeline_selection = selector.select_pipeline_overview(
+            query,
+            trials,
+            trial_enrichments_by_key=trial_enrichments_by_key,
+        )
+        research_selection = selector.select_research_update(
+            query,
+            literature,
+            literature_enrichments_by_key=literature_enrichments_by_key,
+        )
+        competition_selection = selector.select_competition_assessment(
+            query,
+            trials,
+            literature,
+            trial_enrichments_by_key=trial_enrichments_by_key,
+            literature_enrichments_by_key=literature_enrichments_by_key,
+        )
+        trial_map = {record.trial_key: record for record in trials}
+        literature_map = {record.literature_key: record for record in literature}
+        trial_keys = self._unique_keys(
+            [
+                *target_selection.trial_keys,
+                *pipeline_selection.trial_keys,
+                *competition_selection.trial_keys,
+            ]
+        )
+        literature_keys = self._unique_keys(
+            [
+                *target_selection.literature_keys,
+                *research_selection.literature_keys,
+                *competition_selection.literature_keys,
+            ]
         )
         return (
-            ranked_trials[: self.llm_enrichment_top_n],
-            ranked_literature[: self.llm_enrichment_top_n],
+            [trial_map[key] for key in trial_keys if key in trial_map],
+            [literature_map[key] for key in literature_keys if key in literature_map],
         )
 
-    def _build_selective_enrichment_warnings(
+    def _build_candidate_pool_selector(self) -> SectionSelector:
+        base_selector = self.bundle_builder.selector
+        multiplier = SELECTOR_CANDIDATE_POOL_MULTIPLIER
+        return SectionSelector(
+            target_overview_literature_limit=(
+                base_selector.target_overview_literature_limit * multiplier
+            ),
+            target_overview_trial_limit=(
+                base_selector.target_overview_trial_limit * multiplier
+            ),
+            pipeline_trial_limit=base_selector.pipeline_trial_limit * multiplier,
+            research_recent_limit=base_selector.research_recent_limit * multiplier,
+            research_high_value_limit=base_selector.research_high_value_limit * multiplier,
+            competition_trial_limit=base_selector.competition_trial_limit * multiplier,
+            competition_literature_limit=(
+                base_selector.competition_literature_limit * multiplier
+            ),
+        )
+
+    def _build_selector_pool_warning(
         self,
         *,
         trial_candidates: list[NormalizedTrialRecord],
@@ -323,45 +396,23 @@ class AnalysisPipelineService:
         total_literature_count: int,
     ) -> list[WarningItem]:
         warnings: list[WarningItem] = []
-        if self.llm_enrichment_top_n == 0:
-            warnings.append(
-                WarningItem(
-                    code="llm_enrichment_top_n_zero",
-                    level=WarningLevel.WARNING,
-                    scope=WarningScope.BUNDLE,
-                    message=(
-                        "Selective LLM enrichment is enabled with top_n=0; "
-                        "no new LLM generations will run, but cached enrichments "
-                        "will still be reused where available."
-                    ),
-                    details={
-                        "top_n": self.llm_enrichment_top_n,
-                        "total_trial_count": total_trial_count,
-                        "total_literature_count": total_literature_count,
-                    },
-                )
-            )
-            return warnings
-
         if (
             len(trial_candidates) < total_trial_count
             or len(literature_candidates) < total_literature_count
         ):
-            # When scale is large, we pre-rank by deterministic rule scores so the LLM
-            # budget is focused on the most promising records while every downstream
-            # consumer still retains rule-score fallback for the unenhanced tail.
+            # The selector pool keeps LLM spending aligned with report sections while
+            # preserving full-record stats in the final analysis bundle.
             warnings.append(
                 WarningItem(
-                    code="llm_enrichment_top_n_applied",
+                    code="llm_enrichment_selector_pool_applied",
                     level=WarningLevel.WARNING,
                     scope=WarningScope.BUNDLE,
                     message=(
-                        "Selective LLM enrichment is enabled; new LLM generation only "
-                        "runs for top-ranked cache misses, while cached enrichments are "
-                        "reused across the full current fetch."
+                        "Selector-pool LLM enrichment is enabled; new LLM generation "
+                        "only runs for section candidate records."
                     ),
                     details={
-                        "top_n": self.llm_enrichment_top_n,
+                        "candidate_pool_multiplier": SELECTOR_CANDIDATE_POOL_MULTIPLIER,
                         "trial_candidates": len(trial_candidates),
                         "total_trial_count": total_trial_count,
                         "literature_candidates": len(literature_candidates),
@@ -370,6 +421,9 @@ class AnalysisPipelineService:
                 )
             )
         return warnings
+
+    def _unique_keys(self, keys: list[str]) -> list[str]:
+        return list(dict.fromkeys(keys))
 
     def _build_normalized_trials(
         self,
@@ -508,14 +562,6 @@ class AnalysisPipelineService:
                 "error": str(exc),
             },
         )
-
-    def _literature_publication_ordinal(
-        self,
-        literature: NormalizedLiteratureRecord,
-    ) -> int:
-        if literature.publication_date and literature.publication_date.value:
-            return literature.publication_date.value.toordinal()
-        return 0
 
     def _ensure_fetch_run(self, fetch_run_id: str) -> None:
         if self.fetch_run_repository.get(fetch_run_id) is None:

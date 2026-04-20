@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     fetch_pubmed_max_records: int = 100
     fetch_query_interval_seconds: float = 0.5
     analysis_llm_enrichment_full_scan: bool = True
-    analysis_llm_enrichment_top_n: int = 20
 
     model_config = SettingsConfigDict(
         env_prefix="MIS_",
@@ -81,13 +80,6 @@ class Settings(BaseSettings):
     def validate_fetch_query_interval_seconds(cls, value: float) -> float:
         if value < 0:
             raise ValueError("fetch_query_interval_seconds must be >= 0")
-        return value
-
-    @field_validator("analysis_llm_enrichment_top_n")
-    @classmethod
-    def validate_analysis_llm_enrichment_top_n(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("analysis_llm_enrichment_top_n must be >= 0")
         return value
 
 

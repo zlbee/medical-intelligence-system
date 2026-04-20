@@ -94,13 +94,12 @@ Copy-Item .env.example .env
 - `MIS_FETCH_PUBMED_MAX_RECORDS=200`
 - `MIS_FETCH_QUERY_INTERVAL_SECONDS=0.5`
 - `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=false`
-- `MIS_ANALYSIS_LLM_ENRICHMENT_TOP_N=20`
 
 语义说明：
 
 - `page_size`、`retmax`、`batch_size` 表示单轮批大小，不表示总抓取上限
 - 实际总抓取量由 `MIS_FETCH_CLINICALTRIALS_MAX_RECORDS` 和 `MIS_FETCH_PUBMED_MAX_RECORDS` 控制
-- 当 `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=false` 时，只会对规则分更高的记录执行新的 LLM 增强
+- 当 `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=false` 时，只会对章节 selector 的 2 倍候选池执行新的 LLM 增强
 
 ### 4. 前端本地开发的配置说明
 

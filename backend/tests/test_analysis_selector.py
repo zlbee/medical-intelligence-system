@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.analyze import SectionSelector
+from app.analyze import AnalysisBundleBuilder, SectionSelector
 from app.domain import (
     DimensionInsight,
     DimensionInsightBreakdown,
@@ -81,3 +81,35 @@ def test_selector_uses_literature_fallback_when_no_enrichment_exists() -> None:
     selection = selector.select_research_update(query, [strongest, weaker])
 
     assert "pmid-strong" in selection.literature_keys
+
+
+def test_bundle_builder_can_limit_selector_scope_without_changing_global_stats() -> None:
+    builder = AnalysisBundleBuilder(selector=SectionSelector(pipeline_trial_limit=5))
+    query = TargetQuery(target="HER2", indication="breast cancer")
+    excluded_strong_trial = NormalizedTrialRecord(
+        trial_key="trial-excluded",
+        brief_title="HER2 phase 3 breast cancer trial",
+        conditions=["Breast Cancer"],
+        phase="PHASE3",
+        overall_status="RECRUITING",
+    )
+    scoped_trial = NormalizedTrialRecord(
+        trial_key="trial-scoped",
+        brief_title="Background registry",
+        conditions=["Healthy Volunteers"],
+        phase="EARLY_PHASE1",
+        overall_status="COMPLETED",
+    )
+
+    bundle = builder.build(
+        query=query,
+        trials=[excluded_strong_trial, scoped_trial],
+        literature=[],
+        selector_trials=[scoped_trial],
+        selector_literature=[],
+    )
+
+    assert bundle.global_stats.total_trial_count == 2
+    assert bundle.coverage.has_trial_evidence is True
+    assert bundle.section_inputs.pipeline_overview.trial_keys == ["trial-scoped"]
+    assert "trial-excluded" not in bundle.section_inputs.pipeline_overview.trial_keys

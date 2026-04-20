@@ -63,7 +63,7 @@
 3. 生成 `rule score`
 4. 根据配置决定 LLM 增强范围：
    - `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=true` 时，对全部标准化记录逐条增强
-   - `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=false` 时，先按 `rule_scores.overall_score` 排序，再对 trial 和 literature 各自前 `MIS_ANALYSIS_LLM_ENRICHMENT_TOP_N` 条逐条增强
+   - `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN=false` 时，先按章节 selector 的 2 倍限额构建候选池，再对候选池内 trial 和 literature 逐条增强
 5. 运行记录级 LLM 结构化增强
 6. 解析 LLM 返回的 `llm score`
 7. 计算 `final blended score`
@@ -188,7 +188,6 @@ API 变更：
 - 当前默认模型来自现有 `MIS_LLM_DEFAULT_MODEL`
 - 当前执行策略额外受以下配置控制：
   - `MIS_ANALYSIS_LLM_ENRICHMENT_FULL_SCAN`
-  - `MIS_ANALYSIS_LLM_ENRICHMENT_TOP_N`
 - 本轮不做异步任务队列、不做批处理合并调用、不做独立重跑 API
 - 本轮不把 LLM 结果反写到 `NormalizedTrialRecord` / `NormalizedLiteratureRecord`
 - 本轮不做“章节级 LLM 摘要缓存对象”，只做记录级 enrichment + bundle 级聚合

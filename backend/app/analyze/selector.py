@@ -41,7 +41,7 @@ class SectionSelector:
         pipeline_trial_limit: int = 20,
         research_recent_limit: int = 10,
         research_high_value_limit: int = 10,
-        competition_trial_limit: int = 20,
+        competition_trial_limit: int = 10,
         competition_literature_limit: int = 8,
     ) -> None:
         self.target_overview_literature_limit = target_overview_literature_limit

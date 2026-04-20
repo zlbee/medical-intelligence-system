@@ -38,6 +38,8 @@ class AnalysisBundleBuilder:
         query: TargetQuery,
         trials: list[NormalizedTrialRecord],
         literature: list[NormalizedLiteratureRecord],
+        selector_trials: list[NormalizedTrialRecord] | None = None,
+        selector_literature: list[NormalizedLiteratureRecord] | None = None,
         trial_llm_enrichments: list[TrialLLMEnrichment] | None = None,
         literature_llm_enrichments: list[LiteratureLLMEnrichment] | None = None,
         llm_warnings: list[WarningItem] | None = None,
@@ -47,6 +49,12 @@ class AnalysisBundleBuilder:
         llm_warnings = llm_warnings or []
 
         global_stats = build_global_analysis_stats(trials, literature)
+        # Section selection can be intentionally narrower than the full analysis
+        # corpus, but facts and global stats must still describe the complete fetch.
+        selection_trials = selector_trials if selector_trials is not None else trials
+        selection_literature = (
+            selector_literature if selector_literature is not None else literature
+        )
         trial_enrichment_map = {
             enrichment.trial_key: enrichment for enrichment in trial_llm_enrichments
         }
@@ -56,25 +64,25 @@ class AnalysisBundleBuilder:
 
         target_selection = self.selector.select_target_overview(
             query,
-            trials,
-            literature,
+            selection_trials,
+            selection_literature,
             trial_enrichments_by_key=trial_enrichment_map,
             literature_enrichments_by_key=literature_enrichment_map,
         )
         pipeline_selection = self.selector.select_pipeline_overview(
             query,
-            trials,
+            selection_trials,
             trial_enrichments_by_key=trial_enrichment_map,
         )
         research_selection = self.selector.select_research_update(
             query,
-            literature,
+            selection_literature,
             literature_enrichments_by_key=literature_enrichment_map,
         )
         competition_selection = self.selector.select_competition_assessment(
             query,
-            trials,
-            literature,
+            selection_trials,
+            selection_literature,
             trial_enrichments_by_key=trial_enrichment_map,
             literature_enrichments_by_key=literature_enrichment_map,
         )

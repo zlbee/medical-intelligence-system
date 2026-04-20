@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select
 
+from app.analyze import AnalysisBundleBuilder, SectionSelector
 from app.domain import RawRecord, SourceName, TargetQuery
 from app.infra.db import SessionLocal, initialize_database
 from app.orchestration import AnalysisPipelineService
@@ -190,53 +191,51 @@ def test_analysis_pipeline_keeps_best_effort_when_one_llm_record_fails() -> None
     session.close()
 
 
-def test_analysis_pipeline_can_limit_llm_enrichment_to_rule_score_top_n() -> None:
+def test_analysis_pipeline_limits_llm_enrichment_to_selector_pool() -> None:
     initialize_database()
     session = SessionLocal()
     _clear_tables(session)
     fetch_run_id = _seed_fetch_run_with_multiple_records(session)
 
-    bundle = AnalysisPipelineService(
+    service = AnalysisPipelineService(
         session,
         llm_client=StubLLMClient(
             responses=[
                 _trial_llm_response(summary="Top-ranked HER2 trial."),
+                _trial_llm_response(summary="Second-ranked HER2 trial."),
                 _literature_llm_response(summary="Top-ranked HER2 paper."),
+                _literature_llm_response(summary="Second-ranked HER2 paper."),
             ]
         ),
         llm_model="test-model",
         llm_enrichment_full_scan=False,
-        llm_enrichment_top_n=1,
-    ).build(fetch_run_id)
+    )
+    service.bundle_builder = _build_small_selector_bundle_builder()
 
-    assert bundle.llm_enrichment_summary.trial_total == 2
-    assert bundle.llm_enrichment_summary.trial_succeeded == 1
-    assert bundle.llm_enrichment_summary.literature_total == 2
-    assert bundle.llm_enrichment_summary.literature_succeeded == 1
-    assert [item.trial_key for item in bundle.trial_llm_enrichments] == ["NCT03188393"]
-    assert [item.literature_key for item in bundle.literature_llm_enrichments] == ["12345678"]
-    assert any(item.code == "llm_enrichment_top_n_applied" for item in bundle.warnings)
+    bundle = service.build(fetch_run_id)
 
-    session.close()
-
-
-def test_analysis_pipeline_can_skip_llm_when_selective_top_n_is_zero() -> None:
-    initialize_database()
-    session = SessionLocal()
-    _clear_tables(session)
-    fetch_run_id = _seed_fetch_run(session)
-
-    bundle = AnalysisPipelineService(
-        session,
-        llm_client=StubLLMClient(responses=[]),
-        llm_model="test-model",
-        llm_enrichment_full_scan=False,
-        llm_enrichment_top_n=0,
-    ).build(fetch_run_id)
-
-    assert bundle.llm_enrichment_summary.trial_succeeded == 0
-    assert bundle.llm_enrichment_summary.literature_succeeded == 0
-    assert any(item.code == "llm_enrichment_top_n_zero" for item in bundle.warnings)
+    selector_pool_warning = next(
+        item for item in bundle.warnings if item.code == "llm_enrichment_selector_pool_applied"
+    )
+    assert bundle.llm_enrichment_summary.trial_total == 3
+    assert bundle.llm_enrichment_summary.trial_succeeded == 2
+    assert bundle.llm_enrichment_summary.literature_total == 3
+    assert bundle.llm_enrichment_summary.literature_succeeded == 2
+    assert {item.trial_key for item in bundle.trial_llm_enrichments} == {
+        "NCT03188393",
+        "NCT09999999",
+    }
+    assert {item.literature_key for item in bundle.literature_llm_enrichments} == {
+        "12345678",
+        "87654321",
+    }
+    assert bundle.section_inputs.pipeline_overview.trial_keys == ["NCT03188393"]
+    assert "NCT00000000" not in bundle.section_inputs.pipeline_overview.trial_keys
+    assert selector_pool_warning.details["candidate_pool_multiplier"] == 2
+    assert selector_pool_warning.details["trial_candidates"] == 2
+    assert selector_pool_warning.details["total_trial_count"] == 3
+    assert selector_pool_warning.details["literature_candidates"] == 2
+    assert selector_pool_warning.details["total_literature_count"] == 3
 
     session.close()
 
@@ -292,7 +291,7 @@ def test_analysis_pipeline_reuses_cached_stage2_results_across_fetch_runs() -> N
     session.close()
 
 
-def test_analysis_pipeline_reuses_cached_enrichments_outside_top_n() -> None:
+def test_analysis_pipeline_reuses_cached_enrichments_only_inside_selector_pool() -> None:
     initialize_database()
     session = SessionLocal()
     _clear_tables(session)
@@ -303,8 +302,10 @@ def test_analysis_pipeline_reuses_cached_enrichments_outside_top_n() -> None:
             responses=[
                 _trial_llm_response(summary="Cached primary trial."),
                 _trial_llm_response(summary="Cached secondary trial."),
+                _trial_llm_response(summary="Cached outside-pool trial."),
                 _literature_llm_response(summary="Cached primary paper."),
                 _literature_llm_response(summary="Cached secondary paper."),
+                _literature_llm_response(summary="Cached outside-pool paper."),
             ]
         ),
         llm_model="test-model",
@@ -316,8 +317,8 @@ def test_analysis_pipeline_reuses_cached_enrichments_outside_top_n() -> None:
         llm_client=FailingLLMClient(),
         llm_model="test-model",
         llm_enrichment_full_scan=False,
-        llm_enrichment_top_n=1,
     )
+    service.bundle_builder = _build_small_selector_bundle_builder()
 
     bundle = service.build(second_fetch_run_id)
 
@@ -331,7 +332,7 @@ def test_analysis_pipeline_reuses_cached_enrichments_outside_top_n() -> None:
         "12345678",
         "87654321",
     }
-    assert any(item.code == "llm_enrichment_top_n_applied" for item in bundle.warnings)
+    assert any(item.code == "llm_enrichment_selector_pool_applied" for item in bundle.warnings)
 
     session.close()
 
@@ -501,6 +502,20 @@ def _literature_llm_response(*, summary: str) -> dict:
     }
 
 
+def _build_small_selector_bundle_builder() -> AnalysisBundleBuilder:
+    return AnalysisBundleBuilder(
+        selector=SectionSelector(
+            target_overview_literature_limit=0,
+            target_overview_trial_limit=0,
+            pipeline_trial_limit=1,
+            research_recent_limit=0,
+            research_high_value_limit=1,
+            competition_trial_limit=0,
+            competition_literature_limit=0,
+        )
+    )
+
+
 def _seed_fetch_run(session) -> str:
     fetch_run = FetchRunRepository(session).create(
         TargetQuery(target="HER2", indication="breast cancer", aliases=["ERBB2"])
@@ -638,6 +653,77 @@ def _seed_fetch_run_with_multiple_records(session) -> str:
       </Abstract>
       <PublicationTypeList>
         <PublicationType>Review</PublicationType>
+      </PublicationTypeList>
+    </Article>
+  </MedlineCitation>
+</PubmedArticle>
+""".strip()
+                },
+                query_snapshot={"source": "pubmed"},
+                retrieved_at=datetime.now(timezone.utc),
+            ),
+            RawRecord(
+                fetch_run_id=fetch_run_id,
+                source_name=SourceName.CLINICALTRIALS,
+                source_id="NCT00000000",
+                source_url="https://clinicaltrials.gov/study/NCT00000000",
+                target="HER2",
+                indication="breast cancer",
+                payload={
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT00000000",
+                            "briefTitle": "Unrelated metabolic registry",
+                        },
+                        "statusModule": {
+                            "overallStatus": "COMPLETED",
+                            "studyFirstPostDateStruct": {"date": "2018-01-01"},
+                        },
+                        "descriptionModule": {
+                            "briefSummary": "A diabetes registry without oncology focus.",
+                        },
+                        "conditionsModule": {
+                            "conditions": ["Diabetes Mellitus"],
+                            "keywords": ["metabolism"],
+                        },
+                        "designModule": {
+                            "studyType": "OBSERVATIONAL",
+                            "phases": [],
+                        },
+                    }
+                },
+                query_snapshot={"source": "clinicaltrials"},
+                retrieved_at=datetime.now(timezone.utc),
+            ),
+            RawRecord(
+                fetch_run_id=fetch_run_id,
+                source_name=SourceName.PUBMED,
+                source_id="99999999",
+                source_url="https://pubmed.ncbi.nlm.nih.gov/99999999/",
+                target="HER2",
+                indication="breast cancer",
+                payload={
+                    "xml": """
+<PubmedArticle>
+  <MedlineCitation>
+    <PMID Version=\"1\">99999999</PMID>
+    <Article>
+      <Journal>
+        <JournalIssue>
+          <PubDate>
+            <Year>2017</Year>
+            <Month>Jan</Month>
+            <Day>01</Day>
+          </PubDate>
+        </JournalIssue>
+        <Title>Metabolic Registry Journal</Title>
+      </Journal>
+      <ArticleTitle>Metabolic registry methods.</ArticleTitle>
+      <Abstract>
+        <AbstractText>An unrelated registry methods paper.</AbstractText>
+      </Abstract>
+      <PublicationTypeList>
+        <PublicationType>Editorial</PublicationType>
       </PublicationTypeList>
     </Article>
   </MedlineCitation>
